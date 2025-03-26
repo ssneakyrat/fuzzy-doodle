@@ -21,7 +21,7 @@ gradient_clip_val: 1.0
 
 # Hardware/Performance
 num_workers: 4
-precision: 16  # Use mixed precision
+precision: "16-mixed"  # Use mixed precision
 accumulate_grad_batches: 1
 
 # Logging
