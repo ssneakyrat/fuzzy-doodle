@@ -20,10 +20,18 @@ def load_config(config_file):
     with open(config_file, 'r') as f:
         return yaml.safe_load(f)
 
-def merge_configs(model_config, train_config):
+class DotDict(dict):
+    """Dictionary that also supports dot notation access"""
+    __getattr__ = dict.get
+    __setattr__ = dict.__setitem__
+    __delattr__ = dict.__delitem__
+    
+# Add this function to train.py and inference.py instead of the SimpleNamespace version
+def merge_configs_dict(model_config, train_config):
     """Merge model and training configurations"""
     config = {**model_config, **train_config}
-    return config
+    # Convert to a dictionary that also supports dot notation
+    return DotDict(config)
 
 def main(args):
     """Main training function"""
@@ -32,7 +40,7 @@ def main(args):
     train_config = load_config(args.train_config)
     
     # Merge configs
-    config = merge_configs(model_config, train_config)
+    config = merge_configs_dict(model_config, train_config)
     
     # Create directories
     os.makedirs(config['output_dir'], exist_ok=True)
