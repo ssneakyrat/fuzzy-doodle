@@ -137,16 +137,22 @@ class LatentNARModel(pl.LightningModule):
         self._log_text_generations()
     
     def configure_optimizers(self):
+        lr = float(self.config.learning_rate)
+        weight_decay = float(self.config.weight_decay)
         optimizer = torch.optim.AdamW(
             self.parameters(),
-            lr=self.config.learning_rate,
-            weight_decay=self.config.weight_decay
+            lr=lr,
+            weight_decay=weight_decay
         )
         
         if self.config.use_lr_scheduler:
+            # Ensure numerical types for scheduler parameters
+            max_epochs = int(self.config.max_epochs)
+            steps_per_epoch = int(self.config.steps_per_epoch)
+            
             scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
                 optimizer, 
-                T_max=self.config.max_epochs * self.config.steps_per_epoch
+                T_max=max_epochs * steps_per_epoch
             )
             
             return {
