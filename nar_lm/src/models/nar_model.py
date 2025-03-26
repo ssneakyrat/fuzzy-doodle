@@ -4,6 +4,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 import pytorch_lightning as pl
 from transformers import AutoTokenizer
+# Set non-GUI backend before any other matplotlib imports
+import matplotlib
+matplotlib.use('Agg')  # Use non-GUI backend
 import matplotlib.pyplot as plt
 import io
 from PIL import Image
@@ -110,27 +113,30 @@ class LatentNARModel(pl.LightningModule):
         """Generate text samples and log them to TensorBoard"""
         if not self.sample_prompts:
             return
-            
-        device = self.device
-        generated_texts = []
         
-        for prompt in self.sample_prompts:
-            # Tokenize prompt
-            input_ids = self.tokenizer(prompt, return_tensors="pt").input_ids.to(device)
+        try:
+            device = self.device
+            generated_texts = []
             
-            # Generate text
-            with torch.no_grad():
-                output_ids = self.generate(input_ids)
+            for prompt in self.sample_prompts:
+                # Tokenize prompt
+                input_ids = self.tokenizer(prompt, return_tensors="pt").input_ids.to(device)
                 
-            # Decode output
-            output_text = self.tokenizer.decode(output_ids[0], skip_special_tokens=True)
-            generated_texts.append(f"Prompt: {prompt}\nGenerated: {output_text}\n{'-'*40}")
-        
-        # Combine all text samples
-        text_output = "\n".join(generated_texts)
-        
-        # Log to TensorBoard
-        self.logger.experiment.add_text("text_generations", text_output, self.global_step)
+                # Generate text
+                with torch.no_grad():
+                    output_ids = self.generate(input_ids)
+                    
+                # Decode output
+                output_text = self.tokenizer.decode(output_ids[0], skip_special_tokens=True)
+                generated_texts.append(f"Prompt: {prompt}\nGenerated: {output_text}\n{'-'*40}")
+            
+            # Combine all text samples
+            text_output = "\n".join(generated_texts)
+            
+            # Log to TensorBoard
+            self.logger.experiment.add_text("text_generations", text_output, self.global_step)
+        except Exception as e:
+            print(f"Warning: Text generation logging failed with error: {e}")
     
     def on_validation_epoch_end(self):
         """Log text generations at the end of each validation epoch"""

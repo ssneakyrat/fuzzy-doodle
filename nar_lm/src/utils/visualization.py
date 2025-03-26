@@ -1,4 +1,8 @@
 # src/utils/visualization.py
+# Set non-GUI backend before any other matplotlib imports
+import matplotlib
+matplotlib.use('Agg')  # Use non-GUI backend
+
 import matplotlib.pyplot as plt
 import numpy as np
 import torch

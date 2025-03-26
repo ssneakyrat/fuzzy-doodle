@@ -5,6 +5,11 @@ import yaml
 import torch
 import time
 from transformers import AutoTokenizer
+
+# Set non-GUI backend before any other matplotlib imports
+import matplotlib
+matplotlib.use('Agg')  # Use non-GUI backend
+
 from src.models.nar_model import LatentNARModel
 
 def load_config(config_file):

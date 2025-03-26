@@ -7,6 +7,10 @@ import pytorch_lightning as pl
 from pytorch_lightning.loggers import TensorBoardLogger
 from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor, EarlyStopping
 
+# Set non-GUI backend before any other matplotlib imports
+import matplotlib
+matplotlib.use('Agg')  # Use non-GUI backend
+
 from src.models.nar_model import LatentNARModel
 from src.datasets.data_module import NARDataModule
 from src.utils.callbacks import (
@@ -34,6 +38,10 @@ def merge_configs_dict(model_config, train_config):
     return DotDict(config)
 
 def main(args):
+
+    # Set to medium precision
+    torch.set_float32_matmul_precision('medium')
+
     """Main training function"""
     # Load configurations
     model_config = load_config(args.model_config)
@@ -75,12 +83,16 @@ def main(args):
             monitor='val_loss',
             patience=5,
             mode='min'
-        ),
-        # Custom visualization callbacks
-        LatentVisualizationCallback(),
-        AttentionVisualizationCallback(),
-        GenerationProgressCallback()
+        )
     ]
+    
+    # Conditionally add visualization callbacks with try-except blocks
+    try:
+        callbacks.append(LatentVisualizationCallback())
+        callbacks.append(AttentionVisualizationCallback())
+        callbacks.append(GenerationProgressCallback())
+    except Exception as e:
+        print(f"Warning: Could not initialize visualization callbacks: {e}")
     
     # Initialize trainer
     trainer = pl.Trainer(

@@ -96,6 +96,7 @@ class NARDataModule(pl.LightningDataModule):
             batch_size=self.config.batch_size, 
             shuffle=True,
             num_workers=self.config.num_workers,
+            persistent_workers=True,
             pin_memory=True
         )
     
@@ -104,6 +105,7 @@ class NARDataModule(pl.LightningDataModule):
             self.val_dataset, 
             batch_size=self.config.batch_size,
             num_workers=self.config.num_workers,
+            persistent_workers=True,
             pin_memory=True
         )
     
@@ -112,5 +114,6 @@ class NARDataModule(pl.LightningDataModule):
             self.test_dataset, 
             batch_size=self.config.batch_size,
             num_workers=self.config.num_workers,
+            persistent_workers=True,
             pin_memory=True
         )
