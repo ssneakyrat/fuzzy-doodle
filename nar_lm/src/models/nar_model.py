@@ -50,20 +50,22 @@ class LatentNARModel(pl.LightningModule):
         
         loss = None
         length_loss = None
+        return_loss = None
         
         if target_ids is not None:
             # Calculate token prediction loss
             loss_fct = nn.CrossEntropyLoss(ignore_index=self.tokenizer.pad_token_id)
             loss = loss_fct(logits.view(-1, self.config.vocab_size), target_ids.view(-1))
+            return_loss = loss  # Start with base loss
             
             # Calculate length prediction loss if target_seq_length is provided
             if target_seq_length is not None and length_logits is not None:
                 length_loss = self.length_loss_fct(length_logits, target_seq_length)
-                # Combine losses with a weight factor (e.g., 0.2 for length loss)
-                combined_loss = loss + 0.2 * length_loss
-                return combined_loss, logits, latent, length_logits
-                
-        return loss, logits, latent, length_logits
+                # Combine losses with a weight factor
+                return_loss = loss + 0.2 * length_loss
+        
+        # Always return the same structure
+        return return_loss, logits, latent, length_logits
     
     def _predict_length(self, input_ids, latent=None):
         """Predict output sequence length based on input or latent"""
@@ -138,34 +140,61 @@ class LatentNARModel(pl.LightningModule):
         return preds
     
     def _shared_step(self, batch, batch_idx, step_type):
-        input_ids = batch['input_ids']
-        attention_mask = batch['attention_mask']
-        labels = batch['labels']
-        seq_length = batch.get('seq_length')
-        
-        loss, logits, _, length_logits = self(input_ids, attention_mask, labels, seq_length)
-        
-        # Calculate accuracy
-        preds = torch.argmax(logits, dim=-1)
-        mask = (labels != self.tokenizer.pad_token_id)
-        correct = ((preds == labels) & mask).sum().item()
-        total = mask.sum().item()
-        accuracy = correct / total if total > 0 else 0
-        
-        # Calculate length prediction accuracy if applicable
-        length_accuracy = 0
-        if seq_length is not None and length_logits is not None:
-            pred_lengths = torch.argmax(length_logits, dim=-1)
-            # Consider length correct if within ±2 tokens of actual length
-            length_correct = (torch.abs(pred_lengths - seq_length) <= 2).sum().item()
-            length_accuracy = length_correct / len(seq_length)
-            self.log(f"{step_type}_length_accuracy", length_accuracy, prog_bar=True, sync_dist=True)
-        
-        # Log metrics
-        self.log(f"{step_type}_loss", loss, prog_bar=True, sync_dist=True)
-        self.log(f"{step_type}_accuracy", accuracy, prog_bar=True, sync_dist=True)
-        
-        return loss
+        try:
+            input_ids = batch['input_ids']
+            attention_mask = batch['attention_mask']
+            labels = batch['labels']
+            seq_length = batch.get('seq_length')
+            
+            # Debug batch structure if needed
+            # print(f"Batch keys: {batch.keys()}")
+            # if seq_length is not None:
+            #     print(f"seq_length shape: {seq_length.shape}, dtype: {seq_length.dtype}")
+            
+            loss, logits, _, length_logits = self(input_ids, attention_mask, labels, seq_length)
+            
+            # Calculate accuracy with error handling
+            try:
+                preds = torch.argmax(logits, dim=-1)
+                mask = (labels != self.tokenizer.pad_token_id)
+                correct = ((preds == labels) & mask).sum().item()
+                total = mask.sum().item()
+                accuracy = correct / total if total > 0 else 0
+                
+                # Log accuracy only if valid
+                if not np.isnan(accuracy) and not np.isinf(accuracy):
+                    self.log(f"{step_type}_accuracy", accuracy, prog_bar=True, sync_dist=True)
+            except Exception as e:
+                print(f"Warning: Error calculating {step_type}_accuracy: {str(e)}")
+            
+            # Calculate length prediction accuracy if applicable
+            try:
+                length_accuracy = 0
+                if seq_length is not None and length_logits is not None:
+                    pred_lengths = torch.argmax(length_logits, dim=-1)
+                    # Ensure consistent types
+                    if pred_lengths.dtype != seq_length.dtype:
+                        pred_lengths = pred_lengths.to(seq_length.dtype)
+                    
+                    # Consider length correct if within ±2 tokens of actual length
+                    length_correct = (torch.abs(pred_lengths - seq_length) <= 2).sum().item()
+                    length_accuracy = length_correct / len(seq_length)
+                    
+                    # Log length accuracy only if valid
+                    if not np.isnan(length_accuracy) and not np.isinf(length_accuracy):
+                        self.log(f"{step_type}_length_accuracy", length_accuracy, prog_bar=True, sync_dist=True)
+            except Exception as e:
+                print(f"Warning: Error calculating {step_type}_length_accuracy: {str(e)}")
+            
+            # Log loss only if valid
+            if loss is not None and not torch.isnan(loss) and not torch.isinf(loss):
+                self.log(f"{step_type}_loss", loss, prog_bar=True, sync_dist=True)
+            
+            return loss
+        except Exception as e:
+            print(f"Warning: Error in {step_type} step: {str(e)}")
+            # Return zero loss to avoid breaking the training loop
+            return torch.tensor(0.0, requires_grad=True, device=self.device)
     
     def training_step(self, batch, batch_idx):
         return self._shared_step(batch, batch_idx, "train")

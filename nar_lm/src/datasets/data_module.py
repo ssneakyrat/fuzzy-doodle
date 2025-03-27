@@ -130,8 +130,8 @@ class NARDataModule(pl.LightningDataModule):
             padding_value=tokenizer.pad_token_id
         )
         
-        # Convert seq_lengths to tensor
-        seq_lengths = torch.tensor(seq_lengths)
+        # Convert seq_lengths to tensor with consistent dtype (long)
+        seq_lengths = torch.tensor(seq_lengths, dtype=torch.long)
         
         return {
             'input_ids': batch_encoding['input_ids'],
