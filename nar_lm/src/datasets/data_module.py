@@ -1,7 +1,9 @@
 import pytorch_lightning as pl
 from torch.utils.data import DataLoader
 import os
+import torch
 from transformers import AutoTokenizer
+from functools import partial
 
 from src.datasets.text_dataset import SimpleTextDataset
 
@@ -43,16 +45,20 @@ class NARDataModule(pl.LightningDataModule):
                 train_texts = self._create_synthetic_data(self.config.num_train_samples)
                 val_texts = self._create_synthetic_data(self.config.num_val_samples)
             
+            # Create datasets with dynamic sequence handling
+            # Pass max_length as None for fully dynamic handling, or keep config's max_position_embeddings for cap
+            max_len = self.config.max_position_embeddings
+            
             self.train_dataset = SimpleTextDataset(
                 train_texts, 
                 self.tokenizer, 
-                self.config.max_position_embeddings
+                max_len  # Can set to None for full dynamic handling
             )
             
             self.val_dataset = SimpleTextDataset(
                 val_texts, 
                 self.tokenizer, 
-                self.config.max_position_embeddings
+                max_len
             )
             
         if stage == 'test' or stage is None:
@@ -77,18 +83,62 @@ class NARDataModule(pl.LightningDataModule):
         return None
     
     def _create_synthetic_data(self, num_samples):
-        """Create synthetic data for testing"""
+        """Create synthetic data for testing with varied lengths"""
         synthetic_texts = [
-            "This is a synthetic text for training the non-autoregressive model.",
+            "This is a synthetic text for training.",
             "We are using PyTorch Lightning to train our model efficiently.",
             "This model has encoder and decoder components with a latent space.",
-            "Non-autoregressive generation produces all tokens in parallel.",
-            "TensorBoard logging helps us track the training progress and text generation."
+            "Non-autoregressive generation produces all tokens in parallel rather than sequentially like traditional autoregressive language models.",
+            "TensorBoard logging helps us track the training progress and text generation quality across multiple experiments and iterations."
         ]
         
+        # Create more variants with different lengths
+        more_variants = []
+        for text in synthetic_texts:
+            # Short version
+            more_variants.append(text.split('.')[0] + ".")
+            # Extended version
+            more_variants.append(text + " This extension adds more context and increases sequence length variability for better training.")
+        
+        # Combine all variants
+        all_texts = synthetic_texts + more_variants
+        
         # Repeat to reach desired count
-        texts = synthetic_texts * (num_samples // len(synthetic_texts) + 1)
+        texts = all_texts * (num_samples // len(all_texts) + 1)
         return texts[:num_samples]
+    
+    @staticmethod
+    def collate_fn(batch, tokenizer):
+        """Static collate function for dynamic batching to avoid pickling issues"""
+        # Extract individual elements
+        input_ids = [item['input_ids'] for item in batch]
+        attention_mask = [item['attention_mask'] for item in batch]
+        labels = [item['labels'] for item in batch]
+        seq_lengths = [item['seq_length'] for item in batch]
+        
+        # Use tokenizer's pad function for dynamic padding within batch
+        batch_encoding = tokenizer.pad(
+            {'input_ids': input_ids, 'attention_mask': attention_mask},
+            padding=True,
+            return_tensors='pt'
+        )
+        
+        # Pad labels to match input_ids
+        padded_labels = torch.nn.utils.rnn.pad_sequence(
+            labels, 
+            batch_first=True, 
+            padding_value=tokenizer.pad_token_id
+        )
+        
+        # Convert seq_lengths to tensor
+        seq_lengths = torch.tensor(seq_lengths)
+        
+        return {
+            'input_ids': batch_encoding['input_ids'],
+            'attention_mask': batch_encoding['attention_mask'],
+            'labels': padded_labels,
+            'seq_length': seq_lengths
+        }
     
     def train_dataloader(self):
         return DataLoader(
@@ -96,8 +146,9 @@ class NARDataModule(pl.LightningDataModule):
             batch_size=self.config.batch_size, 
             shuffle=True,
             num_workers=self.config.num_workers,
-            persistent_workers=True,
-            pin_memory=True
+            persistent_workers=(self.config.num_workers > 0),
+            pin_memory=True,
+            collate_fn=partial(self.collate_fn, tokenizer=self.tokenizer)
         )
     
     def val_dataloader(self):
@@ -105,8 +156,9 @@ class NARDataModule(pl.LightningDataModule):
             self.val_dataset, 
             batch_size=self.config.batch_size,
             num_workers=self.config.num_workers,
-            persistent_workers=True,
-            pin_memory=True
+            persistent_workers=(self.config.num_workers > 0),
+            pin_memory=True,
+            collate_fn=partial(self.collate_fn, tokenizer=self.tokenizer)
         )
     
     def test_dataloader(self):
@@ -114,6 +166,7 @@ class NARDataModule(pl.LightningDataModule):
             self.test_dataset, 
             batch_size=self.config.batch_size,
             num_workers=self.config.num_workers,
-            persistent_workers=True,
-            pin_memory=True
+            persistent_workers=(self.config.num_workers > 0),
+            pin_memory=True,
+            collate_fn=partial(self.collate_fn, tokenizer=self.tokenizer)
         )

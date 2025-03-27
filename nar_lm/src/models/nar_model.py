@@ -36,32 +36,81 @@ class LatentNARModel(pl.LightningModule):
             "The model can",
             "Non-autoregressive generation is"
         ]
+        
+        # Loss function for length prediction
+        self.length_loss_fct = nn.CrossEntropyLoss()
     
-    def forward(self, input_ids, target_ids=None):
-        encoder_output = self.encoder(input_ids)
+    def forward(self, input_ids, attention_mask=None, target_ids=None, target_seq_length=None):
+        # Encode input
+        encoder_output = self.encoder(input_ids, attention_mask)
         latent_output, latent = self.latent_mapper(encoder_output)
         
-        logits = self.decoder(latent_output)
+        # Get predictions from decoder
+        logits, length_logits = self.decoder(latent_output, None, latent, target_seq_length)
         
         loss = None
+        length_loss = None
+        
         if target_ids is not None:
-            # Calculate cross entropy loss
+            # Calculate token prediction loss
             loss_fct = nn.CrossEntropyLoss(ignore_index=self.tokenizer.pad_token_id)
             loss = loss_fct(logits.view(-1, self.config.vocab_size), target_ids.view(-1))
             
-        return loss, logits, latent
+            # Calculate length prediction loss if target_seq_length is provided
+            if target_seq_length is not None and length_logits is not None:
+                length_loss = self.length_loss_fct(length_logits, target_seq_length)
+                # Combine losses with a weight factor (e.g., 0.2 for length loss)
+                combined_loss = loss + 0.2 * length_loss
+                return combined_loss, logits, latent, length_logits
+                
+        return loss, logits, latent, length_logits
     
-    def generate(self, input_ids, max_length=None):
-        if max_length is None:
-            max_length = self.config.max_position_embeddings
-            
-        # Initial encoding
-        encoder_output = self.encoder(input_ids)
-        latent_output, _ = self.latent_mapper(encoder_output)
+    def _predict_length(self, input_ids, latent=None):
+        """Predict output sequence length based on input or latent"""
+        if latent is None:
+            # Get latent from input
+            encoder_output = self.encoder(input_ids)
+            _, latent = self.latent_mapper(encoder_output)
+        
+        # Pool latent across sequence dimension
+        pooled_latent = torch.mean(latent, dim=1)
+        length_logits = self.decoder.length_predictor(pooled_latent)
+        pred_lengths = torch.argmax(length_logits, dim=-1)
+        
+        # Ensure minimum length (e.g., at least 4 tokens)
+        min_length = 4
+        pred_lengths = torch.maximum(pred_lengths, torch.tensor(min_length, device=pred_lengths.device))
+        
+        return pred_lengths
+    
+    def generate(self, input_ids, attention_mask=None, target_length=None):
+        """Generate text with dynamic sequence length"""
+        batch_size = input_ids.size(0)
+        device = input_ids.device
+        
+        # Encode input
+        encoder_output = self.encoder(input_ids, attention_mask)
+        latent_output, latent = self.latent_mapper(encoder_output)
+        
+        # Predict sequence length if not provided
+        if target_length is None:
+            pred_lengths = self._predict_length(None, latent)
+            # Add small margin to predicted length
+            max_length = int(torch.max(pred_lengths).item() * 1.2)
+            # Limit to config's max position embeddings
+            max_length = min(max_length, self.config.max_position_embeddings)
+        else:
+            # Use provided target length
+            max_length = target_length
+            pred_lengths = torch.tensor([max_length] * batch_size, device=device)
         
         # Initial prediction
-        logits = self.decoder(latent_output)
+        logits, _ = self.decoder(latent_output)
         preds = torch.argmax(logits, dim=-1)
+        
+        # Create an initial mask based on predicted lengths
+        # This ensures we only update tokens within each sequence's predicted length
+        length_mask = torch.arange(preds.size(1), device=device).unsqueeze(0) < pred_lengths.unsqueeze(1)
         
         # Iterative refinement
         for _ in range(self.config.num_refinement_steps):
@@ -70,22 +119,31 @@ class LatentNARModel(pl.LightningModule):
             latent_output, _ = self.latent_mapper(encoder_output)
             
             # Get new predictions
-            logits = self.decoder(latent_output, encoder_output)
+            logits, _ = self.decoder(latent_output, encoder_output)
             new_preds = torch.argmax(logits, dim=-1)
             
             # Update high-confidence predictions
             probs = F.softmax(logits, dim=-1)
             confidence = torch.max(probs, dim=-1)[0]
-            mask = confidence > self.config.confidence_threshold
-            preds = torch.where(mask, new_preds, preds)
+            
+            # Only update tokens that are:
+            # 1. Within the predicted sequence length (length_mask)
+            # 2. Have confidence above threshold
+            update_mask = (confidence > self.config.confidence_threshold) & length_mask
+            preds = torch.where(update_mask, new_preds, preds)
+        
+        # Apply length mask to final predictions (replace tokens beyond predicted length with pad token)
+        preds = torch.where(length_mask, preds, torch.tensor(self.tokenizer.pad_token_id, device=device))
         
         return preds
     
     def _shared_step(self, batch, batch_idx, step_type):
         input_ids = batch['input_ids']
+        attention_mask = batch['attention_mask']
         labels = batch['labels']
+        seq_length = batch.get('seq_length')
         
-        loss, logits, _ = self(input_ids, labels)
+        loss, logits, _, length_logits = self(input_ids, attention_mask, labels, seq_length)
         
         # Calculate accuracy
         preds = torch.argmax(logits, dim=-1)
@@ -93,6 +151,15 @@ class LatentNARModel(pl.LightningModule):
         correct = ((preds == labels) & mask).sum().item()
         total = mask.sum().item()
         accuracy = correct / total if total > 0 else 0
+        
+        # Calculate length prediction accuracy if applicable
+        length_accuracy = 0
+        if seq_length is not None and length_logits is not None:
+            pred_lengths = torch.argmax(length_logits, dim=-1)
+            # Consider length correct if within ±2 tokens of actual length
+            length_correct = (torch.abs(pred_lengths - seq_length) <= 2).sum().item()
+            length_accuracy = length_correct / len(seq_length)
+            self.log(f"{step_type}_length_accuracy", length_accuracy, prog_bar=True, sync_dist=True)
         
         # Log metrics
         self.log(f"{step_type}_loss", loss, prog_bar=True, sync_dist=True)
@@ -120,11 +187,13 @@ class LatentNARModel(pl.LightningModule):
             
             for prompt in self.sample_prompts:
                 # Tokenize prompt
-                input_ids = self.tokenizer(prompt, return_tensors="pt").input_ids.to(device)
+                input_data = self.tokenizer(prompt, return_tensors="pt")
+                input_ids = input_data.input_ids.to(device)
+                attention_mask = input_data.attention_mask.to(device)
                 
                 # Generate text
                 with torch.no_grad():
-                    output_ids = self.generate(input_ids)
+                    output_ids = self.generate(input_ids, attention_mask)
                     
                 # Decode output
                 output_text = self.tokenizer.decode(output_ids[0], skip_special_tokens=True)
