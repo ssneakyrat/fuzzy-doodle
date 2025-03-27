@@ -83,10 +83,10 @@ def main(args):
     
     if not prompts:
         prompts = [
-            "This is a test",
-            "The model generates",
-            "Non-autoregressive generation is",
-            "PyTorch Lightning helps"
+            "In my early childhood in the 80's where we just had television, in which you had to wait which programs were made available to you",
+            "One slight correction, though I realize this video doesn't mean to go into all the minute details",
+            "What i enjoy about space the most, is how much untapped knowledge there is and how much we will never be able to witness",
+            "When I was little, back in the 90s, when I was a child, we had some magazines around the house with pictures of the planets in the Solar System, taken by space probes. They were black and white, with very low resolution. I was fascinated by the environment, by the desire to understand and explore it. I was amazed by what surrounded me, by everything around Earth, and by the entire universe that unfolded through the imprint of those photos—now lost or gathering dust. It’s unimaginable how far science and technology have come, with such beautifully colored, three-dimensional clips that offer an authentic perception of the immensity and vastness of the infinite universe in both time and space."
         ]
     
     # Generate text for each prompt
