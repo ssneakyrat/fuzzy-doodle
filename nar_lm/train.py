@@ -12,7 +12,7 @@ import logging
 import matplotlib
 matplotlib.use('Agg')  # Use non-GUI backend
 
-from src.models.nar_model import LatentNARModel
+from src.models.nar_model import EnhancedNARModel
 from src.datasets.data_module import NARDataModule
 from src.utils.callbacks import (
     LatentVisualizationCallback, 
@@ -83,7 +83,7 @@ def main(args):
     logger_obj.info(f"Training data: {config['num_train_samples']} samples, Validation data: {config['num_val_samples']} samples")
     
     # Initialize model
-    model = LatentNARModel(config)
+    model = EnhancedNARModel(config)
     
     # Initialize data module
     data_module = NARDataModule(config)

@@ -1,4 +1,4 @@
-# src/models/nar_model.py
+# src/models/enhanced_nar_model.py
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -20,17 +20,17 @@ from src.utils.logger import setup_logger
 # Set up module logger
 logger = setup_logger(__name__)
 
-class LatentNARModel(pl.LightningModule):
+class EnhancedNARModel(pl.LightningModule):
     def __init__(self, config):
         super().__init__()
         self.save_hyperparameters(config)
         self.config = config
         
         # Initialize components
-        logger.info(f"Initializing model with hidden_size={config.hidden_size}, latent_size={config.latent_size}")
+        logger.info(f"Initializing enhanced model with hidden_size={config.hidden_size}, latent_size={config.latent_size}")
         self.encoder = Encoder(config)
         self.latent_mapper = LatentMapper(config)
-        self.decoder = Decoder(config)
+        self.decoder = Decoder(config)  # Use the ImprovedDecoder
         
         # Initialize tokenizer
         logger.info(f"Loading tokenizer: {config.tokenizer_name}")
@@ -45,6 +45,16 @@ class LatentNARModel(pl.LightningModule):
         
         # Loss function for length prediction
         self.length_loss_fct = nn.CrossEntropyLoss()
+        
+        # Progressive confidence threshold schedule
+        self.base_confidence_threshold = getattr(config, 'confidence_threshold', 0.9)
+        # Lower thresholds in early refinement steps
+        self.confidence_schedule = [
+            self.base_confidence_threshold - 0.2,  # Step 1: Lower threshold
+            self.base_confidence_threshold - 0.1,  # Step 2: Slightly higher
+            self.base_confidence_threshold,        # Step 3: Original threshold
+            self.base_confidence_threshold + 0.05  # Step 4+: Higher threshold for later steps
+        ]
     
     def forward(self, input_ids, attention_mask=None, target_ids=None, target_seq_length=None):
         # Encode input
@@ -52,7 +62,7 @@ class LatentNARModel(pl.LightningModule):
         latent_output, latent = self.latent_mapper(encoder_output)
         
         # Get predictions from decoder
-        logits, length_logits = self.decoder(latent_output, None, latent, target_seq_length)
+        logits, length_logits, _ = self.decoder(latent_output, None, latent, target_seq_length)
         
         loss = None
         length_loss = None
@@ -91,8 +101,14 @@ class LatentNARModel(pl.LightningModule):
         
         return pred_lengths
     
+    def _get_confidence_threshold(self, step_idx):
+        """Get confidence threshold based on refinement step"""
+        if step_idx < len(self.confidence_schedule):
+            return self.confidence_schedule[step_idx]
+        return self.confidence_schedule[-1]  # Use the last value for all later steps
+    
     def generate(self, input_ids, attention_mask=None, target_length=None):
-        """Generate text with dynamic sequence length"""
+        """Generate text with progressive refinement"""
         batch_size = input_ids.size(0)
         device = input_ids.device
         
@@ -112,36 +128,49 @@ class LatentNARModel(pl.LightningModule):
             max_length = target_length
             pred_lengths = torch.tensor([max_length] * batch_size, device=device)
         
-        # Initial prediction
-        logits, _ = self.decoder(latent_output)
+        # Initial prediction (step 0)
+        logits, _, _ = self.decoder(latent_output)
         preds = torch.argmax(logits, dim=-1)
         
         # Create an initial mask based on predicted lengths
         # This ensures we only update tokens within each sequence's predicted length
         length_mask = torch.arange(preds.size(1), device=device).unsqueeze(0) < pred_lengths.unsqueeze(1)
         
-        # Iterative refinement
-        for _ in range(self.config.num_refinement_steps):
+        # Apply length masking immediately to initial predictions
+        preds = torch.where(length_mask, preds, torch.tensor(self.tokenizer.pad_token_id, device=device))
+        
+        # Progressive refinement
+        for step in range(self.config.num_refinement_steps):
             # Re-encode with the predicted tokens
             encoder_output = self.encoder(preds)
             latent_output, _ = self.latent_mapper(encoder_output)
             
-            # Get new predictions
-            logits, _ = self.decoder(latent_output, encoder_output)
+            # Get new predictions with confidence scores
+            logits, _, confidence_scores = self.decoder(latent_output, encoder_output, prev_token_ids=preds)
             new_preds = torch.argmax(logits, dim=-1)
             
-            # Update high-confidence predictions
-            probs = F.softmax(logits, dim=-1)
-            confidence = torch.max(probs, dim=-1)[0]
+            # If confidence scores not available, calculate from logits
+            if confidence_scores is None:
+                probs = F.softmax(logits, dim=-1)
+                confidence_scores = torch.max(probs, dim=-1)[0]
+            
+            # Get dynamic confidence threshold for this step
+            threshold = self._get_confidence_threshold(step)
             
             # Only update tokens that are:
-            # 1. Within the predicted sequence length (length_mask)
+            # 1. Within the predicted length (length_mask)
             # 2. Have confidence above threshold
-            update_mask = (confidence > self.config.confidence_threshold) & length_mask
+            update_mask = (confidence_scores > threshold) & length_mask
+            
+            # Log refinement progress for debugging
+            update_ratio = torch.sum(update_mask).item() / torch.sum(length_mask).item()
+            logger.debug(f"Refinement step {step+1}: Updating {update_ratio:.2%} of tokens with threshold {threshold:.2f}")
+            
+            # Progressive update strategy
             preds = torch.where(update_mask, new_preds, preds)
-        
-        # Apply length mask to final predictions (replace tokens beyond predicted length with pad token)
-        preds = torch.where(length_mask, preds, torch.tensor(self.tokenizer.pad_token_id, device=device))
+            
+            # Always ensure length masking is applied
+            preds = torch.where(length_mask, preds, torch.tensor(self.tokenizer.pad_token_id, device=device))
         
         return preds
     
@@ -156,104 +185,47 @@ class LatentNARModel(pl.LightningModule):
             labels = batch['labels']
             seq_length = batch.get('seq_length')
             
-            # Log sequence length
-            if seq_length is not None:
-                logger.debug(f"{step_type}_step seq_length: shape={seq_length.shape}, dtype={seq_length.dtype}")
+            # Forward pass
+            loss, logits, _, length_logits = self(input_ids, attention_mask, labels, seq_length)
             
-            # Forward pass with error handling
-            try:
-                loss, logits, _, length_logits = self(input_ids, attention_mask, labels, seq_length)
-            except RuntimeError as e:
-                logger.error(f"Forward pass failed: {e}")
-                # If tensor sizes don't match, try again with a more careful approach
-                if "size mismatch" in str(e):
-                    logger.warning("Attempting recovery from size mismatch...")
-                    # Make sure all tensors have compatible shapes
-                    max_len = input_ids.size(1)
-                    padded_labels = labels
-                    if labels.size(1) != max_len:
-                        padded_labels = torch.nn.functional.pad(
-                            labels, 
-                            (0, max_len - labels.size(1)), 
-                            mode="constant", 
-                            value=self.tokenizer.pad_token_id
-                        )
-                    
-                    # Try forward pass again
-                    loss, logits, _, length_logits = self(input_ids, attention_mask, padded_labels, seq_length)
-                else:
-                    # Other errors we can't handle, re-raise
-                    raise e
+            # Calculate accuracy
+            preds = torch.argmax(logits, dim=-1)
             
-            # Calculate accuracy with error handling
-            accuracy = 0
-            try:
-                preds = torch.argmax(logits, dim=-1)
-                logger.debug(f"{step_type}_step pred shape: {preds.shape}, label shape: {labels.shape}")
-                
-                # Make sure preds and labels have same size for accurate comparison
-                if preds.size() != labels.size():
-                    logger.warning(f"Size mismatch: preds={preds.shape}, labels={labels.shape}. Truncating to smaller size.")
-                    # Truncate to the smaller size
-                    min_len = min(preds.size(1), labels.size(1))
-                    preds = preds[:, :min_len]
-                    labels = labels[:, :min_len]
-                
-                # Log token IDs
-                logger.debug(f"{step_type}_step pad_token_id: {self.tokenizer.pad_token_id}")
-                
-                mask = (labels != self.tokenizer.pad_token_id)
-                correct = ((preds == labels) & mask).sum().item()
-                total = mask.sum().item()
-                accuracy = correct / total if total > 0 else 0
-                
-                # Log accuracy calculation result
-                logger.debug(f"{step_type}_step accuracy calculation: correct={correct}, total={total}, accuracy={accuracy}")
-                
-                # Log accuracy only if valid
-                if not np.isnan(accuracy) and not np.isinf(accuracy):
-                    self.log(f"{step_type}_accuracy", accuracy, prog_bar=True, sync_dist=True)
-            except Exception as e:
-                logger.error(f"Error calculating {step_type}_accuracy: {str(e)}", exc_info=True)
+            # Make sure preds and labels have same size for accurate comparison
+            if preds.size() != labels.size():
+                logger.warning(f"Size mismatch: preds={preds.shape}, labels={labels.shape}. Truncating to smaller size.")
+                # Truncate to the smaller size
+                min_len = min(preds.size(1), labels.size(1))
+                preds = preds[:, :min_len]
+                labels = labels[:, :min_len]
+            
+            mask = (labels != self.tokenizer.pad_token_id)
+            correct = ((preds == labels) & mask).sum().item()
+            total = mask.sum().item()
+            accuracy = correct / total if total > 0 else 0
+            
+            # Log accuracy
+            self.log(f"{step_type}_accuracy", accuracy, prog_bar=True, sync_dist=True)
             
             # Calculate length prediction accuracy if applicable
-            length_accuracy = 0
-            try:
-                if seq_length is not None and length_logits is not None:
-                    pred_lengths = torch.argmax(length_logits, dim=-1)
-                    
-                    logger.debug(f"{step_type}_step length_logits shape: {length_logits.shape}")
-                    
-                    # Ensure consistent types
-                    if pred_lengths.dtype != seq_length.dtype:
-                        logger.debug(f"{step_type}_step converting pred_lengths from {pred_lengths.dtype} to {seq_length.dtype}")
-                        pred_lengths = pred_lengths.to(seq_length.dtype)
-                    
-                    # Consider length correct if within ±2 tokens of actual length
-                    diff = torch.abs(pred_lengths - seq_length)
-                    
-                    length_correct = (diff <= 2).sum().item()
-                    length_accuracy = length_correct / len(seq_length)
-                    
-                    # Log length accuracy calculation
-                    logger.debug(f"{step_type}_step length accuracy: correct={length_correct}, total={len(seq_length)}, accuracy={length_accuracy}")
-                    
-                    # Log length accuracy only if valid
-                    if not np.isnan(length_accuracy) and not np.isinf(length_accuracy):
-                        self.log(f"{step_type}_length_accuracy", length_accuracy, prog_bar=True, sync_dist=True)
-            except Exception as e:
-                logger.error(f"Error calculating {step_type}_length_accuracy: {str(e)}", exc_info=True)
+            if seq_length is not None and length_logits is not None:
+                pred_lengths = torch.argmax(length_logits, dim=-1)
+                
+                # Ensure consistent types
+                if pred_lengths.dtype != seq_length.dtype:
+                    pred_lengths = pred_lengths.to(seq_length.dtype)
+                
+                # Consider length correct if within ±2 tokens of actual length
+                diff = torch.abs(pred_lengths - seq_length)
+                
+                length_correct = (diff <= 2).sum().item()
+                length_accuracy = length_correct / len(seq_length)
+                
+                # Log length accuracy
+                self.log(f"{step_type}_length_accuracy", length_accuracy, prog_bar=True, sync_dist=True)
             
-            # Log loss only if valid
-            if loss is not None:
-                loss_value = loss.item() if not torch.isnan(loss) and not torch.isinf(loss) else None
-                logger.debug(f"{step_type}_step loss: {loss_value}")
-                if loss_value is not None:
-                    self.log(f"{step_type}_loss", loss, prog_bar=True, sync_dist=True)
-            
-            # Log summary
-            logger.info(f"{step_type}_step summary - Loss: {loss.item() if loss is not None else 'None'}, "
-                  f"Accuracy: {accuracy}, Length Accuracy: {length_accuracy}")
+            # Log loss
+            self.log(f"{step_type}_loss", loss, prog_bar=True, sync_dist=True)
             
             return loss
         except Exception as e:
@@ -268,7 +240,6 @@ class LatentNARModel(pl.LightningModule):
         return self._shared_step(batch, batch_idx, "val")
     
     def test_step(self, batch, batch_idx):
-        logger.info(f"Running test_step with batch_idx={batch_idx}")
         return self._shared_step(batch, batch_idx, "test")
     
     def _log_text_generations(self):

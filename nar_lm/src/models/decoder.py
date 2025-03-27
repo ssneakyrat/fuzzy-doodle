@@ -1,3 +1,4 @@
+# src/models/improved_decoder.py
 import torch
 import torch.nn as nn
 import math
@@ -25,6 +26,21 @@ class Decoder(nn.Module):
             nn.Linear(config.hidden_size, self.max_pred_length)
         )
         
+        # Add refinement-specific components
+        self.refinement_encoder = nn.Sequential(
+            nn.Linear(config.hidden_size, config.hidden_size),
+            nn.LayerNorm(config.hidden_size),
+            nn.GELU()
+        )
+        
+        # Add token confidence predictor
+        self.confidence_predictor = nn.Sequential(
+            nn.Linear(config.hidden_size, config.hidden_size // 2),
+            nn.GELU(),
+            nn.Linear(config.hidden_size // 2, 1),
+            nn.Sigmoid()
+        )
+        
     def get_sinusoidal_embedding(self, seq_length, device):
         """Generate sinusoidal position embeddings for arbitrary sequence lengths"""
         positions = torch.arange(seq_length, device=device).unsqueeze(1)
@@ -37,7 +53,7 @@ class Decoder(nn.Module):
         
         return pos_embedding
         
-    def forward(self, latent_output, encoder_output=None, latent=None, target_seq_length=None):
+    def forward(self, latent_output, encoder_output=None, latent=None, target_seq_length=None, prev_token_ids=None):
         batch_size, seq_length = latent_output.size(0), latent_output.size(1)
         device = latent_output.device
         
@@ -48,6 +64,11 @@ class Decoder(nn.Module):
         
         # Add positional embeddings to latent output
         latent_output = latent_output + position_embeds
+        
+        # For refinement steps, incorporate previous token embeddings if available
+        if prev_token_ids is not None and encoder_output is not None:
+            # This is a refinement step - enhance the encoder output with token information
+            encoder_output = self.refinement_encoder(encoder_output)
         
         # For the initial generation, we use self-attention only
         if encoder_output is None:
@@ -66,5 +87,10 @@ class Decoder(nn.Module):
             # Pool latent across sequence dimension
             pooled_latent = torch.mean(latent, dim=1)
             length_logits = self.length_predictor(pooled_latent)
+        
+        # Predict token confidence scores for refinement
+        confidence_scores = None
+        if prev_token_ids is not None:
+            confidence_scores = self.confidence_predictor(decoder_output).squeeze(-1)
             
-        return logits, length_logits
+        return logits, length_logits, confidence_scores

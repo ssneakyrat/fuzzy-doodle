@@ -1,9 +1,0 @@
-2025-03-27 08:51:53 - nar_lm - INFO - Model config: latent_size=192, hidden_size=384
-2025-03-27 08:51:53 - nar_lm - INFO - Training config: batch_size=16, learning_rate=5e-5
-2025-03-27 08:51:53 - nar_lm - INFO - Training data: 1000 samples, Validation data: 100 samples
-2025-03-27 08:51:55 - nar_lm - INFO - Visualization callbacks initialized successfully
-2025-03-27 08:51:55 - nar_lm - INFO - Starting model training
-2025-03-27 08:53:33 - nar_lm - INFO - Starting model testing
-2025-03-27 08:53:33 - nar_lm - INFO - Testing model with 100 test samples
-2025-03-27 08:53:59 - nar_lm - INFO - Test results: [{'test_accuracy': 1.0, 'test_length_accuracy': 1.0, 'test_loss': 0.03571106493473053}]
-2025-03-27 08:54:00 - nar_lm - INFO - Model saved to ./checkpoints\final_model.ckpt
