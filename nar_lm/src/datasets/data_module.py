@@ -4,8 +4,13 @@ import os
 import torch
 from transformers import AutoTokenizer
 from functools import partial
+import logging
 
+from src.utils.logger import setup_logger
 from src.datasets.text_dataset import SimpleTextDataset
+
+# Set up module logger
+logger = setup_logger(__name__)
 
 class NARDataModule(pl.LightningDataModule):
     def __init__(self, config):
@@ -19,24 +24,24 @@ class NARDataModule(pl.LightningDataModule):
     def prepare_data(self):
         """Download data or prepare data if needed"""
         # Download tokenizer
-        print(f"[DEBUG] NARDataModule.prepare_data: Downloading tokenizer {self.config.tokenizer_name}")
+        logger.info(f"Downloading tokenizer {self.config.tokenizer_name}")
         AutoTokenizer.from_pretrained(self.config.tokenizer_name)
         
     def setup(self, stage=None):
         """Setup datasets for training, validation, and testing"""
-        print(f"[DEBUG] NARDataModule.setup: Setting up for stage={stage}")
+        logger.info(f"Setting up for stage={stage}")
         
         if self.tokenizer is None:
-            print(f"[DEBUG] NARDataModule.setup: Initializing tokenizer {self.config.tokenizer_name}")
+            logger.info(f"Initializing tokenizer {self.config.tokenizer_name}")
             self.tokenizer = AutoTokenizer.from_pretrained(self.config.tokenizer_name)
             # Add padding token if not present
             if self.tokenizer.pad_token is None:
                 self.tokenizer.pad_token = self.tokenizer.eos_token
-                print(f"[DEBUG] NARDataModule.setup: Set pad_token to eos_token={self.tokenizer.pad_token}")
+                logger.info(f"Set pad_token to eos_token={self.tokenizer.pad_token}")
         
         # Create datasets based on stage
         if stage == 'fit' or stage is None:
-            print(f"[DEBUG] NARDataModule.setup: Setting up train and validation datasets")
+            logger.info("Setting up train and validation datasets")
             train_texts = self._load_texts(self.config.train_file)
             val_texts = self._load_texts(self.config.val_file)
             
@@ -45,26 +50,26 @@ class NARDataModule(pl.LightningDataModule):
                 split_idx = int(len(train_texts) * (1 - self.config.val_split))
                 val_texts = train_texts[split_idx:]
                 train_texts = train_texts[:split_idx]
-                print(f"[DEBUG] NARDataModule.setup: Split training data - train={len(train_texts)}, val={len(val_texts)}")
+                logger.info(f"Split training data - train={len(train_texts)}, val={len(val_texts)}")
             
             # If no data files, create synthetic data
             if train_texts is None:
-                print(f"[DEBUG] NARDataModule.setup: Creating synthetic data - train={self.config.num_train_samples}, val={self.config.num_val_samples}")
+                logger.info(f"Creating synthetic data - train={self.config.num_train_samples}, val={self.config.num_val_samples}")
                 train_texts = self._create_synthetic_data(self.config.num_train_samples)
                 val_texts = self._create_synthetic_data(self.config.num_val_samples)
             
             # Create dataset instances (now just storing raw texts)
             max_len = self.config.max_position_embeddings
-            print(f"[DEBUG] NARDataModule.setup: Using max_length={max_len}")
+            logger.debug(f"Using max_length={max_len}")
             
-            print(f"[DEBUG] NARDataModule.setup: Creating train dataset with {len(train_texts)} texts")
+            logger.info(f"Creating train dataset with {len(train_texts)} texts")
             self.train_dataset = SimpleTextDataset(
                 train_texts, 
                 self.tokenizer, 
                 max_len
             )
             
-            print(f"[DEBUG] NARDataModule.setup: Creating validation dataset with {len(val_texts)} texts")
+            logger.info(f"Creating validation dataset with {len(val_texts)} texts")
             self.val_dataset = SimpleTextDataset(
                 val_texts, 
                 self.tokenizer, 
@@ -72,13 +77,13 @@ class NARDataModule(pl.LightningDataModule):
             )
             
         if stage == 'test' or stage is None:
-            print(f"[DEBUG] NARDataModule.setup: Setting up test dataset")
+            logger.info("Setting up test dataset")
             test_texts = self._load_texts(self.config.test_file)
             if test_texts is None:
-                print(f"[DEBUG] NARDataModule.setup: Creating synthetic test data - {self.config.num_test_samples} samples")
+                logger.info(f"Creating synthetic test data - {self.config.num_test_samples} samples")
                 test_texts = self._create_synthetic_data(self.config.num_test_samples)
                 
-            print(f"[DEBUG] NARDataModule.setup: Creating test dataset with {len(test_texts)} texts")
+            logger.info(f"Creating test dataset with {len(test_texts)} texts")
             self.test_dataset = SimpleTextDataset(
                 test_texts, 
                 self.tokenizer, 
@@ -88,18 +93,18 @@ class NARDataModule(pl.LightningDataModule):
     def _load_texts(self, file_path):
         """Load texts from file"""
         if file_path and os.path.exists(file_path):
-            print(f"[DEBUG] NARDataModule._load_texts: Loading texts from {file_path}")
+            logger.info(f"Loading texts from {file_path}")
             with open(file_path, 'r', encoding='utf-8') as f:
                 lines = f.readlines()
             # Filter out empty lines
             texts = [line.strip() for line in lines if len(line.strip()) > 10]
-            print(f"[DEBUG] NARDataModule._load_texts: Loaded {len(texts)} texts")
+            logger.info(f"Loaded {len(texts)} texts")
             return texts
         return None
     
     def _create_synthetic_data(self, num_samples):
         """Create synthetic data for testing with varied lengths"""
-        print(f"[DEBUG] NARDataModule._create_synthetic_data: Creating {num_samples} synthetic samples")
+        logger.info(f"Creating {num_samples} synthetic samples")
         synthetic_texts = [
             "This is a synthetic text for training.",
             "We are using PyTorch Lightning to train our model efficiently.",
@@ -130,9 +135,9 @@ class NARDataModule(pl.LightningDataModule):
             # Extract raw texts from the batch
             texts = [item['text'] for item in batch]
             
-            # Debug info
+            # Debug info with logger
             if len(batch) > 0:
-                print(f"[DEBUG] collate_fn: Processing batch of {len(texts)} texts")
+                logger.debug(f"Processing batch of {len(texts)} texts")
             
             # Perform tokenization with padding in a single step
             # This addresses the tokenizer warning by using the __call__ method with padding
@@ -150,12 +155,12 @@ class NARDataModule(pl.LightningDataModule):
             # Calculate sequence lengths from attention mask
             seq_lengths = encodings['attention_mask'].sum(dim=1).long()
             
-            # Debug info
+            # Debug info with logger
             if len(batch) > 0:
-                print(f"[DEBUG] collate_fn: Tokenized batch with seq_lengths dtype={seq_lengths.dtype}, shape={seq_lengths.shape}")
+                logger.debug(f"Tokenized batch with seq_lengths dtype={seq_lengths.dtype}, shape={seq_lengths.shape}")
                 # Print sample of sequence lengths
                 if len(seq_lengths) > 0:
-                    print(f"[DEBUG] collate_fn: Sample seq_lengths: {seq_lengths[:min(5, len(seq_lengths))]}")
+                    logger.debug(f"Sample seq_lengths: {seq_lengths[:min(5, len(seq_lengths))]}")
             
             return {
                 'input_ids': encodings['input_ids'],
@@ -164,9 +169,7 @@ class NARDataModule(pl.LightningDataModule):
                 'seq_length': seq_lengths
             }
         except Exception as e:
-            print(f"[ERROR] Error in collate_fn: {e}")
-            import traceback
-            traceback.print_exc()
+            logger.error(f"Error in collate_fn: {e}", exc_info=True)
             # Return empty tensors as a fallback to avoid crashing the training
             return {
                 'input_ids': torch.zeros((1, 1), dtype=torch.long),
@@ -176,7 +179,7 @@ class NARDataModule(pl.LightningDataModule):
             }
     
     def train_dataloader(self):
-        print(f"[DEBUG] NARDataModule.train_dataloader: Creating with batch_size={self.config.batch_size}")
+        logger.info(f"Creating train dataloader with batch_size={self.config.batch_size}")
         return DataLoader(
             self.train_dataset, 
             batch_size=self.config.batch_size, 
@@ -190,7 +193,7 @@ class NARDataModule(pl.LightningDataModule):
         )
     
     def val_dataloader(self):
-        print(f"[DEBUG] NARDataModule.val_dataloader: Creating with batch_size={self.config.batch_size}")
+        logger.info(f"Creating validation dataloader with batch_size={self.config.batch_size}")
         return DataLoader(
             self.val_dataset, 
             batch_size=self.config.batch_size,
@@ -203,9 +206,9 @@ class NARDataModule(pl.LightningDataModule):
         )
     
     def test_dataloader(self):
-        print(f"[DEBUG] NARDataModule.test_dataloader: Creating with batch_size={self.config.batch_size}")
+        logger.info(f"Creating test dataloader with batch_size={self.config.batch_size}")
         if self.test_dataset is None:
-            print(f"[WARNING] NARDataModule.test_dataloader: test_dataset is None, setting up explicitly")
+            logger.warning("test_dataset is None, setting up explicitly")
             self.setup(stage='test')
             
         if self.test_dataset is None:

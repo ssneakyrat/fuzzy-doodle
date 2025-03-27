@@ -1,5 +1,9 @@
 from torch.utils.data import Dataset
 import torch
+from src.utils.logger import setup_logger
+
+# Set up module logger
+logger = setup_logger(__name__)
 
 class SimpleTextDataset(Dataset):
     def __init__(self, texts, tokenizer, max_length=None):
@@ -15,14 +19,14 @@ class SimpleTextDataset(Dataset):
         self.tokenizer = tokenizer
         self.max_length = max_length
         
-        # Debug print for tokenizer configuration
-        print(f"[DEBUG] SimpleTextDataset: tokenizer={tokenizer.__class__.__name__}, pad_token={tokenizer.pad_token}, eos_token={tokenizer.eos_token}")
-        print(f"[DEBUG] SimpleTextDataset: max_length={max_length}, sample_text='{texts[0][:30]}...'")
+        # Log tokenizer configuration
+        logger.debug(f"SimpleTextDataset: tokenizer={tokenizer.__class__.__name__}, pad_token={tokenizer.pad_token}, eos_token={tokenizer.eos_token}")
+        logger.debug(f"SimpleTextDataset: max_length={max_length}, sample_text='{texts[0][:30]}...'")
         
         # Ensure pad_token is properly set
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
-            print(f"[DEBUG] SimpleTextDataset: Set pad_token to eos_token={self.tokenizer.pad_token}")
+            logger.info(f"Set pad_token to eos_token={self.tokenizer.pad_token}")
         
         # Only tokenize a small sample to get length statistics (not for actual use)
         # Use a subset to avoid slow initialization with large datasets
@@ -41,10 +45,10 @@ class SimpleTextDataset(Dataset):
         
         seq_lengths = sample_encodings['length']
         
-        # Debug sequence lengths
-        print(f"[DEBUG] SimpleTextDataset: stored {len(texts)} raw texts")
+        # Log sequence length statistics
+        logger.info(f"Stored {len(texts)} raw texts")
         if len(seq_lengths) > 0:
-            print(f"[DEBUG] SimpleTextDataset: sequence lengths (sample) - min={min(seq_lengths)}, max={max(seq_lengths)}, mean={sum(seq_lengths)/len(seq_lengths):.2f}")
+            logger.info(f"Sequence lengths (sample) - min={min(seq_lengths)}, max={max(seq_lengths)}, mean={sum(seq_lengths)/len(seq_lengths):.2f}")
         
     def __len__(self):
         return len(self.texts)

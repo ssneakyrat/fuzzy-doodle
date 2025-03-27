@@ -6,6 +6,7 @@ import torch
 import pytorch_lightning as pl
 from pytorch_lightning.loggers import TensorBoardLogger
 from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor, EarlyStopping
+import logging
 
 # Set non-GUI backend before any other matplotlib imports
 import matplotlib
@@ -18,6 +19,7 @@ from src.utils.callbacks import (
     AttentionVisualizationCallback,
     GenerationProgressCallback
 )
+from src.utils.logger import setup_logger
 
 def load_config(config_file):
     """Load configuration from YAML file"""
@@ -38,6 +40,9 @@ def merge_configs_dict(model_config, train_config):
     return DotDict(config)
 
 def main(args):
+    # Set up logger
+    log_level = logging.DEBUG if args.verbose else logging.INFO
+    logger_obj = setup_logger('nar_lm', log_file=os.path.join(args.output_dir, 'training.log'), level=log_level)
 
     # Set to medium precision
     torch.set_float32_matmul_precision('medium')
@@ -55,21 +60,21 @@ def main(args):
     os.makedirs(config['log_dir'], exist_ok=True)
     
     # Initialize logger
-    logger = TensorBoardLogger(
+    tb_logger = TensorBoardLogger(
         save_dir=config['log_dir'],
         name='nar_lm'
     )
+    
+    # Log training configuration
+    logger_obj.info(f"Model config: latent_size={config['latent_size']}, hidden_size={config['hidden_size']}")
+    logger_obj.info(f"Training config: batch_size={config['batch_size']}, learning_rate={config['learning_rate']}")
+    logger_obj.info(f"Training data: {config['num_train_samples']} samples, Validation data: {config['num_val_samples']} samples")
     
     # Initialize model
     model = LatentNARModel(config)
     
     # Initialize data module
     data_module = NARDataModule(config)
-    
-    # Debug: print model and data module configurations
-    print(f"[DEBUG] Model config: latent_size={config['latent_size']}, hidden_size={config['hidden_size']}")
-    print(f"[DEBUG] Training config: batch_size={config['batch_size']}, num_train_samples={config['num_train_samples']}")
-    print(f"[DEBUG] Validation config: num_val_samples={config['num_val_samples']}")
     
     # Define callbacks
     callbacks = [
@@ -91,13 +96,14 @@ def main(args):
         )
     ]
     
-    # Conditionally add visualization callbacks with try-except blocks
+    # Conditionally add visualization callbacks
     try:
         callbacks.append(LatentVisualizationCallback())
         callbacks.append(AttentionVisualizationCallback())
         callbacks.append(GenerationProgressCallback())
+        logger_obj.info("Visualization callbacks initialized successfully")
     except Exception as e:
-        print(f"[ERROR] Could not initialize visualization callbacks: {e}")
+        logger_obj.error(f"Could not initialize visualization callbacks: {e}", exc_info=True)
     
     # Initialize trainer
     trainer = pl.Trainer(
@@ -105,7 +111,7 @@ def main(args):
         accelerator='auto',  # Automatically detect GPU
         devices=1,
         precision=config['precision'],
-        logger=logger,
+        logger=tb_logger,
         callbacks=callbacks,
         gradient_clip_val=config['gradient_clip_val'],
         accumulate_grad_batches=config['accumulate_grad_batches'],
@@ -113,24 +119,24 @@ def main(args):
     )
     
     # Train model
+    logger_obj.info("Starting model training")
     trainer.fit(model, data_module)
     
-    # Debug information before testing
-    print(f"[DEBUG] Starting model testing")
+    # Test information
+    logger_obj.info("Starting model testing")
     # Setup test data explicitly to ensure it's initialized
     data_module.setup(stage='test')
     test_loader = data_module.test_dataloader()
-    print(f"[DEBUG] Testing model with {len(test_loader.dataset)} test samples")
-    print(f"[DEBUG] Test batch size: {config['batch_size']}")
+    logger_obj.info(f"Testing model with {len(test_loader.dataset)} test samples")
     
     # Test model
     test_result = trainer.test(model, datamodule=data_module)
-    print(f"[DEBUG] Test results: {test_result}")
+    logger_obj.info(f"Test results: {test_result}")
     
     # Save final model
     final_path = os.path.join(config['output_dir'], 'final_model.ckpt')
     trainer.save_checkpoint(final_path)
-    print(f"[DEBUG] Model saved to {final_path}")
+    logger_obj.info(f"Model saved to {final_path}")
 
 
 if __name__ == "__main__":
@@ -146,6 +152,17 @@ if __name__ == "__main__":
         type=str, 
         default="./configs/training_config.yaml",
         help="Path to training configuration file"
+    )
+    parser.add_argument(
+        "--output_dir",
+        type=str,
+        default="./output",
+        help="Output directory for logs and checkpoints"
+    )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Enable verbose (debug) logging"
     )
     args = parser.parse_args()
     

@@ -5,12 +5,14 @@ import yaml
 import torch
 import time
 from transformers import AutoTokenizer
+import logging
 
 # Set non-GUI backend before any other matplotlib imports
 import matplotlib
 matplotlib.use('Agg')  # Use non-GUI backend
 
 from src.models.nar_model import LatentNARModel
+from src.utils.logger import setup_logger
 
 def load_config(config_file):
     """Load configuration from YAML file"""
@@ -31,6 +33,10 @@ def merge_configs_dict(model_config, train_config):
 
 def main(args):
     """Main inference function"""
+    # Set up logger
+    log_level = logging.DEBUG if args.verbose else logging.INFO
+    logger = setup_logger('nar_inference', log_file=args.log_file, level=log_level)
+    
     # Load configurations
     model_config = load_config(args.model_config)
     train_config = load_config(args.train_config)
@@ -39,17 +45,16 @@ def main(args):
     config = merge_configs_dict(model_config, train_config)
     
     # Initialize tokenizer
+    logger.info(f"Loading tokenizer: {config['tokenizer_name']}")
     tokenizer = AutoTokenizer.from_pretrained(config['tokenizer_name'])
     
     # Load model
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using device: {device}")
+    logger.info(f"Using device: {device}")
     
+    logger.info(f"Loading model from checkpoint: {args.checkpoint_path}")
     model = LatentNARModel.load_from_checkpoint(args.checkpoint_path, config=config)
     model.to(device)
-    model.eval()
-    
-    # Set model to evaluation mode
     model.eval()
     
     # Process input prompts
@@ -58,6 +63,7 @@ def main(args):
         prompts.append(args.prompt)
     
     if args.input_file:
+        logger.info(f"Reading prompts from file: {args.input_file}")
         with open(args.input_file, 'r', encoding='utf-8') as f:
             for line in f:
                 line = line.strip()
@@ -76,7 +82,7 @@ def main(args):
     results = []
     
     for prompt in prompts:
-        print(f"\nPrompt: {prompt}")
+        logger.info(f"Processing prompt: {prompt}")
         
         # Tokenize
         input_ids = tokenizer(prompt, return_tensors="pt").input_ids.to(device)
@@ -94,8 +100,8 @@ def main(args):
         # Decode output
         output_text = tokenizer.decode(output_ids[0], skip_special_tokens=True)
         
-        print(f"Generated: {output_text}")
-        print(f"Generation time: {generation_time:.4f} seconds")
+        logger.info(f"Generated: {output_text}")
+        logger.info(f"Generation time: {generation_time:.4f} seconds")
         
         # Save result
         results.append({
@@ -106,6 +112,7 @@ def main(args):
     
     # Save results to file if requested
     if args.output_file:
+        logger.info(f"Saving results to {args.output_file}")
         with open(args.output_file, 'w', encoding='utf-8') as f:
             for result in results:
                 f.write(f"Prompt: {result['prompt']}\n")
@@ -113,7 +120,7 @@ def main(args):
                 f.write(f"Generation time: {result['generation_time']:.4f} seconds\n")
                 f.write("-" * 50 + "\n")
                 
-        print(f"\nResults saved to {args.output_file}")
+        logger.info(f"Results saved to {args.output_file}")
 
 
 if __name__ == "__main__":
@@ -150,6 +157,17 @@ if __name__ == "__main__":
         "--output_file", 
         type=str, 
         help="File to save generation results"
+    )
+    parser.add_argument(
+        "--log_file",
+        type=str,
+        default="./inference.log",
+        help="Path to log file"
+    )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Enable verbose (debug) logging"
     )
     args = parser.parse_args()
     

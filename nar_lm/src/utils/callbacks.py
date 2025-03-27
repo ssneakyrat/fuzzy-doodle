@@ -9,6 +9,10 @@ import io
 from PIL import Image
 import numpy as np
 import torchvision
+from src.utils.logger import setup_logger
+
+# Set up module logger
+logger = setup_logger(__name__)
 
 class LatentVisualizationCallback(pl.Callback):
     """Visualize the latent space during training"""
@@ -23,8 +27,7 @@ class LatentVisualizationCallback(pl.Callback):
             val_dataloader = trainer.datamodule.val_dataloader()
             batch = next(iter(val_dataloader))
             
-            # Debug print to help troubleshoot
-            print(f"[DEBUG] LatentVisualizationCallback: batch keys: {batch.keys()}")
+            logger.debug("LatentVisualizationCallback: Processing batch")
             
             # Move to the same device as the model
             input_ids = batch['input_ids'].to(pl_module.device)
@@ -32,23 +35,23 @@ class LatentVisualizationCallback(pl.Callback):
             if attention_mask is not None:
                 attention_mask = attention_mask.to(pl_module.device)
             
-            print(f"[DEBUG] LatentVisualizationCallback: input_ids shape: {input_ids.shape}")
+            logger.debug(f"LatentVisualizationCallback: input_ids shape: {input_ids.shape}")
             
-            # Forward pass to get latent representations with error handling
+            # Forward pass to get latent representations
             with torch.no_grad():
                 encoder_output = pl_module.encoder(input_ids, attention_mask)
-                print(f"[DEBUG] LatentVisualizationCallback: encoder_output shape: {encoder_output.shape}")
+                logger.debug(f"LatentVisualizationCallback: encoder_output shape: {encoder_output.shape}")
                 _, latent = pl_module.latent_mapper(encoder_output)
-                print(f"[DEBUG] LatentVisualizationCallback: latent shape: {latent.shape}")
+                logger.debug(f"LatentVisualizationCallback: latent shape: {latent.shape}")
             
             # Take a subset and ensure we have enough data
             max_samples = min(self.num_samples, latent.size(0))
             if max_samples == 0:
-                print("[WARNING] LatentVisualizationCallback: No samples available for visualization")
+                logger.warning("No samples available for latent visualization")
                 return
                 
             latent_subset = latent[:max_samples].cpu().numpy()
-            print(f"[DEBUG] LatentVisualizationCallback: latent_subset shape: {latent_subset.shape}")
+            logger.debug(f"LatentVisualizationCallback: latent_subset shape: {latent_subset.shape}")
             
             # Visualize latent space (first 2 dimensions)
             fig, ax = plt.subplots(figsize=(10, 8))
@@ -60,7 +63,7 @@ class LatentVisualizationCallback(pl.Callback):
                 
                 # Ensure we have at least 2 dimensions
                 if len(avg_latent) < 2:
-                    print(f"[WARNING] Latent dimension too small: {len(avg_latent)}")
+                    logger.warning(f"Latent dimension too small: {len(avg_latent)}")
                     continue
                     
                 # Take first 2 dimensions
@@ -87,9 +90,7 @@ class LatentVisualizationCallback(pl.Callback):
                 global_step=trainer.global_step
             )
         except Exception as e:
-            print(f"Warning: Latent visualization failed with error: {e}")
-            import traceback
-            traceback.print_exc()  # Print full stack trace for better debugging
+            logger.error(f"Latent visualization failed: {e}", exc_info=True)
 
 
 class AttentionVisualizationCallback(pl.Callback):
@@ -161,9 +162,7 @@ class AttentionVisualizationCallback(pl.Callback):
                 global_step=trainer.global_step
             )
         except Exception as e:
-            print(f"Warning: Attention visualization failed with error: {e}")
-            import traceback
-            traceback.print_exc()
+            logger.error(f"Attention visualization failed: {e}", exc_info=True)
 
 
 class GenerationProgressCallback(pl.Callback):
@@ -183,6 +182,7 @@ class GenerationProgressCallback(pl.Callback):
             
             # Process the first prompt
             prompt = self.prompts[0]
+            logger.info(f"GenerationProgressCallback: Generating from prompt '{prompt}'")
             
             # Tokenize
             input_ids = tokenizer(prompt, return_tensors="pt").input_ids.to(device)
@@ -228,6 +228,7 @@ class GenerationProgressCallback(pl.Callback):
                 
                 # Save the current output
                 all_outputs.append(tokenizer.decode(preds[0], skip_special_tokens=True))
+                logger.debug(f"Refinement step {step+1}: {all_outputs[-1]}")
             
             # Log to TensorBoard
             log_text = f"Prompt: {prompt}\n\n"
@@ -241,7 +242,4 @@ class GenerationProgressCallback(pl.Callback):
                 global_step=trainer.global_step
             )
         except Exception as e:
-            print(f"Warning: Generation progress visualization failed with error: {e}")
-            # Print more detailed error information
-            import traceback
-            traceback.print_exc()
+            logger.error(f"Generation progress visualization failed: {e}", exc_info=True)

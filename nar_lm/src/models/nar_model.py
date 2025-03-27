@@ -15,6 +15,10 @@ import numpy as np
 from src.models.encoder import Encoder
 from src.models.decoder import Decoder
 from src.models.latent_mapper import LatentMapper
+from src.utils.logger import setup_logger
+
+# Set up module logger
+logger = setup_logger(__name__)
 
 class LatentNARModel(pl.LightningModule):
     def __init__(self, config):
@@ -23,11 +27,13 @@ class LatentNARModel(pl.LightningModule):
         self.config = config
         
         # Initialize components
+        logger.info(f"Initializing model with hidden_size={config.hidden_size}, latent_size={config.latent_size}")
         self.encoder = Encoder(config)
         self.latent_mapper = LatentMapper(config)
         self.decoder = Decoder(config)
         
         # Initialize tokenizer
+        logger.info(f"Loading tokenizer: {config.tokenizer_name}")
         self.tokenizer = AutoTokenizer.from_pretrained(config.tokenizer_name)
         
         # Sample prompts for generation logging
@@ -141,27 +147,27 @@ class LatentNARModel(pl.LightningModule):
     
     def _shared_step(self, batch, batch_idx, step_type):
         try:
-            # Debug print to check batch structure
-            print(f"[DEBUG] {step_type}_step batch keys: {batch.keys()}")
-            print(f"[DEBUG] {step_type}_step input_ids shape: {batch['input_ids'].shape}")
+            # Log batch structure
+            logger.debug(f"{step_type}_step batch keys: {batch.keys()}")
+            logger.debug(f"{step_type}_step input_ids shape: {batch['input_ids'].shape}")
             
             input_ids = batch['input_ids']
             attention_mask = batch['attention_mask']
             labels = batch['labels']
             seq_length = batch.get('seq_length')
             
-            # Debug print for sequence length
+            # Log sequence length
             if seq_length is not None:
-                print(f"[DEBUG] {step_type}_step seq_length: shape={seq_length.shape}, dtype={seq_length.dtype}, values={seq_length[:5]}")
+                logger.debug(f"{step_type}_step seq_length: shape={seq_length.shape}, dtype={seq_length.dtype}")
             
             # Forward pass with error handling
             try:
                 loss, logits, _, length_logits = self(input_ids, attention_mask, labels, seq_length)
             except RuntimeError as e:
-                print(f"[ERROR] Forward pass failed: {e}")
+                logger.error(f"Forward pass failed: {e}")
                 # If tensor sizes don't match, try again with a more careful approach
                 if "size mismatch" in str(e):
-                    print(f"[RECOVERY] Attempting recovery from size mismatch...")
+                    logger.warning("Attempting recovery from size mismatch...")
                     # Make sure all tensors have compatible shapes
                     max_len = input_ids.size(1)
                     padded_labels = labels
@@ -183,33 +189,32 @@ class LatentNARModel(pl.LightningModule):
             accuracy = 0
             try:
                 preds = torch.argmax(logits, dim=-1)
-                # Debug predictions
-                print(f"[DEBUG] {step_type}_step pred shape: {preds.shape}, label shape: {labels.shape}")
+                logger.debug(f"{step_type}_step pred shape: {preds.shape}, label shape: {labels.shape}")
                 
                 # Make sure preds and labels have same size for accurate comparison
                 if preds.size() != labels.size():
-                    print(f"[WARNING] Size mismatch: preds={preds.shape}, labels={labels.shape}. Truncating to smaller size.")
+                    logger.warning(f"Size mismatch: preds={preds.shape}, labels={labels.shape}. Truncating to smaller size.")
                     # Truncate to the smaller size
                     min_len = min(preds.size(1), labels.size(1))
                     preds = preds[:, :min_len]
                     labels = labels[:, :min_len]
                 
-                # Verify token IDs
-                print(f"[DEBUG] {step_type}_step pad_token_id: {self.tokenizer.pad_token_id}")
+                # Log token IDs
+                logger.debug(f"{step_type}_step pad_token_id: {self.tokenizer.pad_token_id}")
                 
                 mask = (labels != self.tokenizer.pad_token_id)
                 correct = ((preds == labels) & mask).sum().item()
                 total = mask.sum().item()
                 accuracy = correct / total if total > 0 else 0
                 
-                # Debug accuracy calculation
-                print(f"[DEBUG] {step_type}_step accuracy calculation: correct={correct}, total={total}, accuracy={accuracy}")
+                # Log accuracy calculation result
+                logger.debug(f"{step_type}_step accuracy calculation: correct={correct}, total={total}, accuracy={accuracy}")
                 
                 # Log accuracy only if valid
                 if not np.isnan(accuracy) and not np.isinf(accuracy):
                     self.log(f"{step_type}_accuracy", accuracy, prog_bar=True, sync_dist=True)
             except Exception as e:
-                print(f"[ERROR] Error calculating {step_type}_accuracy: {str(e)}")
+                logger.error(f"Error calculating {step_type}_accuracy: {str(e)}", exc_info=True)
             
             # Calculate length prediction accuracy if applicable
             length_accuracy = 0
@@ -217,47 +222,42 @@ class LatentNARModel(pl.LightningModule):
                 if seq_length is not None and length_logits is not None:
                     pred_lengths = torch.argmax(length_logits, dim=-1)
                     
-                    # Debug length predictions
-                    print(f"[DEBUG] {step_type}_step length_logits shape: {length_logits.shape}")
-                    print(f"[DEBUG] {step_type}_step pred_lengths: {pred_lengths[:5]}")
+                    logger.debug(f"{step_type}_step length_logits shape: {length_logits.shape}")
                     
                     # Ensure consistent types
                     if pred_lengths.dtype != seq_length.dtype:
-                        print(f"[DEBUG] {step_type}_step converting pred_lengths from {pred_lengths.dtype} to {seq_length.dtype}")
+                        logger.debug(f"{step_type}_step converting pred_lengths from {pred_lengths.dtype} to {seq_length.dtype}")
                         pred_lengths = pred_lengths.to(seq_length.dtype)
                     
                     # Consider length correct if within ±2 tokens of actual length
                     diff = torch.abs(pred_lengths - seq_length)
-                    print(f"[DEBUG] {step_type}_step length diff: {diff[:5]}")
                     
                     length_correct = (diff <= 2).sum().item()
                     length_accuracy = length_correct / len(seq_length)
                     
-                    # Debug length accuracy
-                    print(f"[DEBUG] {step_type}_step length accuracy: correct={length_correct}, total={len(seq_length)}, accuracy={length_accuracy}")
+                    # Log length accuracy calculation
+                    logger.debug(f"{step_type}_step length accuracy: correct={length_correct}, total={len(seq_length)}, accuracy={length_accuracy}")
                     
                     # Log length accuracy only if valid
                     if not np.isnan(length_accuracy) and not np.isinf(length_accuracy):
                         self.log(f"{step_type}_length_accuracy", length_accuracy, prog_bar=True, sync_dist=True)
             except Exception as e:
-                print(f"[ERROR] Error calculating {step_type}_length_accuracy: {str(e)}")
+                logger.error(f"Error calculating {step_type}_length_accuracy: {str(e)}", exc_info=True)
             
             # Log loss only if valid
             if loss is not None:
                 loss_value = loss.item() if not torch.isnan(loss) and not torch.isinf(loss) else None
-                print(f"[DEBUG] {step_type}_step loss: {loss_value}")
+                logger.debug(f"{step_type}_step loss: {loss_value}")
                 if loss_value is not None:
                     self.log(f"{step_type}_loss", loss, prog_bar=True, sync_dist=True)
             
-            # Print comprehensive debug summary
-            print(f"[DEBUG] {step_type}_step SUMMARY - Loss: {loss.item() if loss is not None else 'None'}, "
+            # Log summary
+            logger.info(f"{step_type}_step summary - Loss: {loss.item() if loss is not None else 'None'}, "
                   f"Accuracy: {accuracy}, Length Accuracy: {length_accuracy}")
             
             return loss
         except Exception as e:
-            print(f"[ERROR] Critical error in {step_type}_step: {str(e)}")
-            import traceback
-            traceback.print_exc()
+            logger.error(f"Critical error in {step_type}_step: {str(e)}", exc_info=True)
             # Return zero loss to avoid breaking the training loop
             return torch.tensor(0.0, requires_grad=True, device=self.device)
     
@@ -268,7 +268,7 @@ class LatentNARModel(pl.LightningModule):
         return self._shared_step(batch, batch_idx, "val")
     
     def test_step(self, batch, batch_idx):
-        print(f"[DEBUG] Running test_step with batch_idx={batch_idx}, batch shape={batch['input_ids'].shape}")
+        logger.info(f"Running test_step with batch_idx={batch_idx}")
         return self._shared_step(batch, batch_idx, "test")
     
     def _log_text_generations(self):
@@ -300,9 +300,7 @@ class LatentNARModel(pl.LightningModule):
             # Log to TensorBoard
             self.logger.experiment.add_text("text_generations", text_output, self.global_step)
         except Exception as e:
-            print(f"[ERROR] Text generation logging failed: {e}")
-            import traceback
-            traceback.print_exc()
+            logger.error(f"Text generation logging failed: {e}", exc_info=True)
     
     def on_validation_epoch_end(self):
         """Log text generations at the end of each validation epoch"""
