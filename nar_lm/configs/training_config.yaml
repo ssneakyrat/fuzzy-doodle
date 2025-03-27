@@ -1,31 +1,36 @@
 # configs/training_config.yaml
-# Training configuration
+# Training configuration with real-world dataset
 
 # Dataset 
-train_file: null  # Set to path for real data
-val_file: null
-test_file: null
-val_split: 0.1
-num_train_samples: 1000  # Used for synthetic data
-num_val_samples: 100     # Increased from 10 to 100 for better validation
-num_test_samples: 100
+dataset_name: "wikitext"                   # HuggingFace dataset name
+dataset_config: "wikitext-103-v1"          # Dataset configuration name
+num_train_samples: 10000                  # Number of samples to use from dataset
+num_val_samples: 1000                     # Number of validation samples
+num_test_samples: 1000                    # Number of test samples
+max_char_length: 1000                     # Maximum character length for each text sample
+val_split: 0.1                            # Only used if no validation set is available
+
+# Legacy options (kept for backward compatibility)
+train_file: null                          # Set to path for custom data file
+val_file: null                            # Set to path for custom validation file  
+test_file: null                           # Set to path for custom test file
 
 # Training parameters
 batch_size: 16
 learning_rate: 5e-5
 weight_decay: 0.01
-max_epochs: 10
-steps_per_epoch: 63  # num_train_samples / batch_size (approx)
+max_epochs: 1 #15                            # Increased from 10
+steps_per_epoch: 625                      # num_train_samples / batch_size
 use_lr_scheduler: true
 gradient_clip_val: 1.0
 
 # Hardware/Performance
 num_workers: 4
-precision: "16-mixed"  # Use mixed precision
+precision: "16-mixed"                     # Use mixed precision
 accumulate_grad_batches: 1
 
 # Logging
-log_every_n_steps: 10
+log_every_n_steps: 50
 save_top_k: 2
 
 # Paths

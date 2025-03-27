@@ -5,6 +5,8 @@ import torch
 from transformers import AutoTokenizer
 from functools import partial
 import logging
+from datasets import load_dataset, Dataset
+import random
 
 from src.utils.logger import setup_logger
 from src.datasets.text_dataset import SimpleTextDataset
@@ -27,6 +29,31 @@ class NARDataModule(pl.LightningDataModule):
         logger.info(f"Downloading tokenizer {self.config.tokenizer_name}")
         AutoTokenizer.from_pretrained(self.config.tokenizer_name)
         
+        # If dataset_name is provided, download it
+        if hasattr(self.config, 'dataset_name') and self.config.dataset_name:
+            dataset_name = self.config.dataset_name
+            dataset_config = getattr(self.config, 'dataset_config', None)
+            
+            # Special handling for datasets that require configs
+            if dataset_name == "wikitext" and not dataset_config:
+                dataset_config = "wikitext-103-v1"  # Default config
+                logger.info(f"Using default config '{dataset_config}' for wikitext dataset")
+            
+            logger.info(f"Downloading dataset {dataset_name}" + 
+                       (f" with config {dataset_config}" if dataset_config else ""))
+            
+            try:
+                if dataset_config:
+                    # Just to trigger download
+                    load_dataset(dataset_name, dataset_config, split="train[:1%]")
+                else:
+                    # Just to trigger download
+                    load_dataset(dataset_name, split="train[:1%]")
+                    
+                logger.info(f"Dataset {dataset_name} downloaded successfully")
+            except Exception as e:
+                logger.error(f"Error downloading dataset {dataset_name}: {e}")
+        
     def setup(self, stage=None):
         """Setup datasets for training, validation, and testing"""
         logger.info(f"Setting up for stage={stage}")
@@ -42,23 +69,38 @@ class NARDataModule(pl.LightningDataModule):
         # Create datasets based on stage
         if stage == 'fit' or stage is None:
             logger.info("Setting up train and validation datasets")
-            train_texts = self._load_texts(self.config.train_file)
-            val_texts = self._load_texts(self.config.val_file)
             
-            # If no validation file, split from training
-            if val_texts is None and train_texts is not None:
-                split_idx = int(len(train_texts) * (1 - self.config.val_split))
-                val_texts = train_texts[split_idx:]
-                train_texts = train_texts[:split_idx]
-                logger.info(f"Split training data - train={len(train_texts)}, val={len(val_texts)}")
+            # Try to load from files first (keeping backward compatibility)
+            train_texts = self._load_texts(self.config.train_file) if hasattr(self.config, 'train_file') else None
+            val_texts = self._load_texts(self.config.val_file) if hasattr(self.config, 'val_file') else None
             
-            # If no data files, create synthetic data
+            # If no data files, try to load from dataset_name
+            if train_texts is None and hasattr(self.config, 'dataset_name') and self.config.dataset_name:
+                dataset_name = self.config.dataset_name
+                dataset_config = getattr(self.config, 'dataset_config', None)
+                
+                # Format the dataset name with config if provided
+                dataset_id = dataset_name
+                if dataset_config:
+                    logger.info(f"Loading real-world dataset: {dataset_name}/{dataset_config}")
+                    dataset_id = f"{dataset_name}/{dataset_config}"
+                else:
+                    logger.info(f"Loading real-world dataset: {dataset_name}")
+                
+                train_texts, val_texts = self._load_real_dataset(
+                    dataset_id,
+                    num_train=getattr(self.config, 'num_train_samples', 10000),
+                    num_val=getattr(self.config, 'num_val_samples', 1000)
+                )
+                logger.info(f"Loaded {len(train_texts)} train samples and {len(val_texts)} validation samples")
+            
+            # If still no data, fall back to synthetic data (for testing)
             if train_texts is None:
                 logger.info(f"Creating synthetic data - train={self.config.num_train_samples}, val={self.config.num_val_samples}")
                 train_texts = self._create_synthetic_data(self.config.num_train_samples)
                 val_texts = self._create_synthetic_data(self.config.num_val_samples)
             
-            # Create dataset instances (now just storing raw texts)
+            # Create dataset instances
             max_len = self.config.max_position_embeddings
             logger.debug(f"Using max_length={max_len}")
             
@@ -78,7 +120,31 @@ class NARDataModule(pl.LightningDataModule):
             
         if stage == 'test' or stage is None:
             logger.info("Setting up test dataset")
-            test_texts = self._load_texts(self.config.test_file)
+            test_texts = self._load_texts(self.config.test_file) if hasattr(self.config, 'test_file') else None
+            
+            # Try to load from dataset_name if available
+            if test_texts is None and hasattr(self.config, 'dataset_name') and self.config.dataset_name:
+                dataset_name = self.config.dataset_name
+                dataset_config = getattr(self.config, 'dataset_config', None)
+                
+                # Format the dataset name with config if provided
+                dataset_id = dataset_name
+                if dataset_config:
+                    logger.info(f"Loading real-world dataset for testing: {dataset_name}/{dataset_config}")
+                    dataset_id = f"{dataset_name}/{dataset_config}"
+                else:
+                    logger.info(f"Loading real-world dataset for testing: {dataset_name}")
+                
+                _, _, test_texts = self._load_real_dataset(
+                    dataset_id,
+                    num_train=0,
+                    num_val=0,
+                    num_test=getattr(self.config, 'num_test_samples', 1000),
+                    include_test=True
+                )
+                logger.info(f"Loaded {len(test_texts)} test samples from dataset")
+            
+            # Fall back to synthetic if needed
             if test_texts is None:
                 logger.info(f"Creating synthetic test data - {self.config.num_test_samples} samples")
                 test_texts = self._create_synthetic_data(self.config.num_test_samples)
@@ -90,8 +156,128 @@ class NARDataModule(pl.LightningDataModule):
                 self.config.max_position_embeddings
             )
     
+    def _load_real_dataset(self, dataset_name, num_train=10000, num_val=1000, num_test=1000, include_test=False):
+        """Load a real dataset from HuggingFace datasets library"""
+        try:
+            logger.info(f"Loading dataset {dataset_name}")
+            
+            # Split dataset name and config if provided
+            parts = dataset_name.split('/')
+            dataset_config = None
+            
+            if len(parts) > 1 and '/' in dataset_name:
+                dataset_name, dataset_config = parts[0], parts[1]
+            
+            # Special handling for datasets that require configs
+            if dataset_name == "wikitext" and not dataset_config:
+                dataset_config = "wikitext-103-v1"  # Default config
+                logger.info(f"Using default config '{dataset_config}' for wikitext dataset")
+            
+            # Load dataset with appropriate config
+            if dataset_config:
+                logger.info(f"Loading dataset with name={dataset_name}, config={dataset_config}")
+                dataset = load_dataset(dataset_name, dataset_config)
+            else:
+                logger.info(f"Loading dataset with name={dataset_name}")
+                dataset = load_dataset(dataset_name)
+            
+            # Check if the dataset has train/validation/test splits
+            has_train = 'train' in dataset
+            has_val = 'validation' in dataset
+            has_test = 'test' in dataset
+
+            # Determine text column (common text columns in datasets)
+            text_columns = ['text', 'content', 'document', 'sentence', 'article']
+            text_column = None
+            
+            # Find the first available text column
+            sample = dataset[list(dataset.keys())[0]][0]  # Get first item from first split
+            for col in text_columns:
+                if col in sample:
+                    text_column = col
+                    break
+            
+            if text_column is None:
+                # If no common text column found, use the first string column
+                for key, value in sample.items():
+                    if isinstance(value, str) and len(value.strip()) > 0:
+                        text_column = key
+                        break
+            
+            if text_column is None:
+                logger.error(f"Could not find text column in dataset {dataset_name}")
+                return None, None, None if include_test else None, None
+            
+            logger.info(f"Using '{text_column}' as text column")
+            
+            # Extract texts from dataset
+            train_texts = []
+            val_texts = []
+            test_texts = []
+            
+            # Load train split if available, otherwise use default split
+            if has_train and num_train > 0:
+                # Get a subset of the training data (up to num_train samples)
+                train_split = dataset['train'].shuffle(seed=42).select(range(min(num_train, len(dataset['train']))))
+                train_texts = [item[text_column] for item in train_split if len(item[text_column].strip()) > 10]
+                logger.info(f"Loaded {len(train_texts)} training samples from dataset")
+            
+            # Load validation split if available, otherwise use a part of train
+            if has_val and num_val > 0:
+                val_split = dataset['validation'].shuffle(seed=42).select(range(min(num_val, len(dataset['validation']))))
+                val_texts = [item[text_column] for item in val_split if len(item[text_column].strip()) > 10]
+                logger.info(f"Loaded {len(val_texts)} validation samples from dataset")
+            elif has_train and num_val > 0:
+                # If no validation split, use a part of the training data (that wasn't used for training)
+                offset = min(num_train, len(dataset['train']))
+                max_val = min(num_val, max(0, len(dataset['train']) - offset))
+                if max_val > 0:
+                    val_split = dataset['train'].shuffle(seed=43).select(range(offset, offset + max_val))
+                    val_texts = [item[text_column] for item in val_split if len(item[text_column].strip()) > 10]
+                    logger.info(f"Used {len(val_texts)} training samples as validation")
+            
+            # Load test split if requested and available
+            if include_test and has_test and num_test > 0:
+                test_split = dataset['test'].shuffle(seed=44).select(range(min(num_test, len(dataset['test']))))
+                test_texts = [item[text_column] for item in test_split if len(item[text_column].strip()) > 10]
+                logger.info(f"Loaded {len(test_texts)} test samples from dataset")
+            
+            # Process texts to ensure quality
+            train_texts = self._filter_and_preprocess_texts(train_texts)
+            val_texts = self._filter_and_preprocess_texts(val_texts)
+            test_texts = self._filter_and_preprocess_texts(test_texts) if include_test else None
+            
+            if include_test:
+                return train_texts, val_texts, test_texts
+            else:
+                return train_texts, val_texts
+            
+        except Exception as e:
+            logger.error(f"Error loading dataset {dataset_name}: {e}", exc_info=True)
+            return None, None, None if include_test else None, None
+    
+    def _filter_and_preprocess_texts(self, texts):
+        """Filter and preprocess texts for quality"""
+        if not texts:
+            return []
+            
+        # Remove texts that are too short
+        min_length = 20  # Minimum character length
+        filtered_texts = [text for text in texts if len(text.strip()) >= min_length]
+        
+        # Remove duplicates
+        unique_texts = list(set(filtered_texts))
+        
+        # Trim down to a more manageable length if needed
+        max_char_length = getattr(self.config, 'max_char_length', 2000)
+        trimmed_texts = [text[:max_char_length] for text in unique_texts]
+        
+        logger.info(f"Text preprocessing: {len(texts)} → {len(filtered_texts)} → {len(unique_texts)} → {len(trimmed_texts)}")
+        
+        return trimmed_texts
+    
     def _load_texts(self, file_path):
-        """Load texts from file"""
+        """Load texts from file (original method preserved)"""
         if file_path and os.path.exists(file_path):
             logger.info(f"Loading texts from {file_path}")
             with open(file_path, 'r', encoding='utf-8') as f:
@@ -103,7 +289,7 @@ class NARDataModule(pl.LightningDataModule):
         return None
     
     def _create_synthetic_data(self, num_samples):
-        """Create synthetic data for testing with varied lengths"""
+        """Create synthetic data for testing (original method preserved)"""
         logger.info(f"Creating {num_samples} synthetic samples")
         synthetic_texts = [
             "This is a synthetic text for training.",
@@ -130,7 +316,7 @@ class NARDataModule(pl.LightningDataModule):
     
     @staticmethod
     def collate_fn(batch, tokenizer, max_length=None):
-        """Improved collate function that handles tokenization in a single step"""
+        """Collate function (original method preserved)"""
         try:
             # Extract raw texts from the batch
             texts = [item['text'] for item in batch]
@@ -140,7 +326,6 @@ class NARDataModule(pl.LightningDataModule):
                 logger.debug(f"Processing batch of {len(texts)} texts")
             
             # Perform tokenization with padding in a single step
-            # This addresses the tokenizer warning by using the __call__ method with padding
             encodings = tokenizer(
                 texts,
                 padding=True,
@@ -154,13 +339,6 @@ class NARDataModule(pl.LightningDataModule):
             
             # Calculate sequence lengths from attention mask
             seq_lengths = encodings['attention_mask'].sum(dim=1).long()
-            
-            # Debug info with logger
-            if len(batch) > 0:
-                logger.debug(f"Tokenized batch with seq_lengths dtype={seq_lengths.dtype}, shape={seq_lengths.shape}")
-                # Print sample of sequence lengths
-                if len(seq_lengths) > 0:
-                    logger.debug(f"Sample seq_lengths: {seq_lengths[:min(5, len(seq_lengths))]}")
             
             return {
                 'input_ids': encodings['input_ids'],

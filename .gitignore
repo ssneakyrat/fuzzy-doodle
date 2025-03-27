@@ -2,3 +2,5 @@
 *.pyc
 *.ckpt
 logs/
+experiments/
+dataset_analysis
