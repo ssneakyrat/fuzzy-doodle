@@ -11,7 +11,7 @@ import logging
 import matplotlib
 matplotlib.use('Agg')  # Use non-GUI backend
 
-from src.models.nar_model import LatentNARModel
+from src.models.nar_model import EnhancedNARModel
 from src.utils.logger import setup_logger
 
 def load_config(config_file):
@@ -64,7 +64,7 @@ def main(args):
     logger.info(f"Using device: {device}")
     
     logger.info(f"Loading model from checkpoint: {args.checkpoint_path}")
-    model = LatentNARModel.load_from_checkpoint(args.checkpoint_path, config=config)
+    model = EnhancedNARModel.load_from_checkpoint(args.checkpoint_path, config=config)
     model.to(device)
     model.eval()
     
