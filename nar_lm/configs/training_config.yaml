@@ -7,7 +7,7 @@ val_file: null
 test_file: null
 val_split: 0.1
 num_train_samples: 1000  # Used for synthetic data
-num_val_samples: 10
+num_val_samples: 100     # Increased from 10 to 100 for better validation
 num_test_samples: 100
 
 # Training parameters

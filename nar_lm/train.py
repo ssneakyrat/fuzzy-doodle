@@ -66,6 +66,11 @@ def main(args):
     # Initialize data module
     data_module = NARDataModule(config)
     
+    # Debug: print model and data module configurations
+    print(f"[DEBUG] Model config: latent_size={config['latent_size']}, hidden_size={config['hidden_size']}")
+    print(f"[DEBUG] Training config: batch_size={config['batch_size']}, num_train_samples={config['num_train_samples']}")
+    print(f"[DEBUG] Validation config: num_val_samples={config['num_val_samples']}")
+    
     # Define callbacks
     callbacks = [
         # Checkpoint callback
@@ -92,7 +97,7 @@ def main(args):
         callbacks.append(AttentionVisualizationCallback())
         callbacks.append(GenerationProgressCallback())
     except Exception as e:
-        print(f"Warning: Could not initialize visualization callbacks: {e}")
+        print(f"[ERROR] Could not initialize visualization callbacks: {e}")
     
     # Initialize trainer
     trainer = pl.Trainer(
@@ -110,11 +115,22 @@ def main(args):
     # Train model
     trainer.fit(model, data_module)
     
+    # Debug information before testing
+    print(f"[DEBUG] Starting model testing")
+    # Setup test data explicitly to ensure it's initialized
+    data_module.setup(stage='test')
+    test_loader = data_module.test_dataloader()
+    print(f"[DEBUG] Testing model with {len(test_loader.dataset)} test samples")
+    print(f"[DEBUG] Test batch size: {config['batch_size']}")
+    
     # Test model
-    trainer.test(model, data_module)
+    test_result = trainer.test(model, datamodule=data_module)
+    print(f"[DEBUG] Test results: {test_result}")
     
     # Save final model
-    trainer.save_checkpoint(os.path.join(config['output_dir'], 'final_model.ckpt'))
+    final_path = os.path.join(config['output_dir'], 'final_model.ckpt')
+    trainer.save_checkpoint(final_path)
+    print(f"[DEBUG] Model saved to {final_path}")
 
 
 if __name__ == "__main__":
