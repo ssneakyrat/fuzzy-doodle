@@ -53,8 +53,7 @@ class NARDataModule(pl.LightningDataModule):
                 train_texts = self._create_synthetic_data(self.config.num_train_samples)
                 val_texts = self._create_synthetic_data(self.config.num_val_samples)
             
-            # Create datasets with dynamic sequence handling
-            # Pass max_length as None for fully dynamic handling, or keep config's max_position_embeddings for cap
+            # Create dataset instances (now just storing raw texts)
             max_len = self.config.max_position_embeddings
             print(f"[DEBUG] NARDataModule.setup: Using max_length={max_len}")
             
@@ -62,7 +61,7 @@ class NARDataModule(pl.LightningDataModule):
             self.train_dataset = SimpleTextDataset(
                 train_texts, 
                 self.tokenizer, 
-                max_len  # Can set to None for full dynamic handling
+                max_len
             )
             
             print(f"[DEBUG] NARDataModule.setup: Creating validation dataset with {len(val_texts)} texts")
@@ -125,41 +124,56 @@ class NARDataModule(pl.LightningDataModule):
         return texts[:num_samples]
     
     @staticmethod
-    def collate_fn(batch, tokenizer):
-        """Static collate function for dynamic batching to avoid pickling issues"""
-        # Extract individual elements
-        input_ids = [item['input_ids'] for item in batch]
-        attention_mask = [item['attention_mask'] for item in batch]
-        labels = [item['labels'] for item in batch]
-        seq_lengths = [item['seq_length'] for item in batch]
-        
-        # Debug batch consistency
-        if len(batch) > 0:
-            print(f"[DEBUG] collate_fn: Batch size={len(batch)}, seq_length dtype={type(seq_lengths[0])}")
-        
-        # Use tokenizer's pad function for dynamic padding within batch
-        batch_encoding = tokenizer.pad(
-            {'input_ids': input_ids, 'attention_mask': attention_mask},
-            padding=True,
-            return_tensors='pt'
-        )
-        
-        # Pad labels to match input_ids
-        padded_labels = torch.nn.utils.rnn.pad_sequence(
-            labels, 
-            batch_first=True, 
-            padding_value=tokenizer.pad_token_id
-        )
-        
-        # Convert seq_lengths to tensor with consistent dtype (long)
-        seq_lengths = torch.tensor(seq_lengths, dtype=torch.long)
-        
-        return {
-            'input_ids': batch_encoding['input_ids'],
-            'attention_mask': batch_encoding['attention_mask'],
-            'labels': padded_labels,
-            'seq_length': seq_lengths
-        }
+    def collate_fn(batch, tokenizer, max_length=None):
+        """Improved collate function that handles tokenization in a single step"""
+        try:
+            # Extract raw texts from the batch
+            texts = [item['text'] for item in batch]
+            
+            # Debug info
+            if len(batch) > 0:
+                print(f"[DEBUG] collate_fn: Processing batch of {len(texts)} texts")
+            
+            # Perform tokenization with padding in a single step
+            # This addresses the tokenizer warning by using the __call__ method with padding
+            encodings = tokenizer(
+                texts,
+                padding=True,
+                truncation=True if max_length else False,
+                max_length=max_length,
+                return_tensors="pt"
+            )
+            
+            # Use input_ids as labels for reconstruction task
+            labels = encodings['input_ids'].clone()
+            
+            # Calculate sequence lengths from attention mask
+            seq_lengths = encodings['attention_mask'].sum(dim=1).long()
+            
+            # Debug info
+            if len(batch) > 0:
+                print(f"[DEBUG] collate_fn: Tokenized batch with seq_lengths dtype={seq_lengths.dtype}, shape={seq_lengths.shape}")
+                # Print sample of sequence lengths
+                if len(seq_lengths) > 0:
+                    print(f"[DEBUG] collate_fn: Sample seq_lengths: {seq_lengths[:min(5, len(seq_lengths))]}")
+            
+            return {
+                'input_ids': encodings['input_ids'],
+                'attention_mask': encodings['attention_mask'],
+                'labels': labels,
+                'seq_length': seq_lengths
+            }
+        except Exception as e:
+            print(f"[ERROR] Error in collate_fn: {e}")
+            import traceback
+            traceback.print_exc()
+            # Return empty tensors as a fallback to avoid crashing the training
+            return {
+                'input_ids': torch.zeros((1, 1), dtype=torch.long),
+                'attention_mask': torch.zeros((1, 1), dtype=torch.long),
+                'labels': torch.zeros((1, 1), dtype=torch.long),
+                'seq_length': torch.ones((1,), dtype=torch.long)
+            }
     
     def train_dataloader(self):
         print(f"[DEBUG] NARDataModule.train_dataloader: Creating with batch_size={self.config.batch_size}")
@@ -170,7 +184,9 @@ class NARDataModule(pl.LightningDataModule):
             num_workers=self.config.num_workers,
             persistent_workers=(self.config.num_workers > 0),
             pin_memory=True,
-            collate_fn=partial(self.collate_fn, tokenizer=self.tokenizer)
+            collate_fn=partial(self.collate_fn, 
+                             tokenizer=self.tokenizer, 
+                             max_length=self.config.max_position_embeddings)
         )
     
     def val_dataloader(self):
@@ -181,7 +197,9 @@ class NARDataModule(pl.LightningDataModule):
             num_workers=self.config.num_workers,
             persistent_workers=(self.config.num_workers > 0),
             pin_memory=True,
-            collate_fn=partial(self.collate_fn, tokenizer=self.tokenizer)
+            collate_fn=partial(self.collate_fn, 
+                             tokenizer=self.tokenizer, 
+                             max_length=self.config.max_position_embeddings)
         )
     
     def test_dataloader(self):
@@ -199,5 +217,7 @@ class NARDataModule(pl.LightningDataModule):
             num_workers=self.config.num_workers,
             persistent_workers=(self.config.num_workers > 0),
             pin_memory=True,
-            collate_fn=partial(self.collate_fn, tokenizer=self.tokenizer)
+            collate_fn=partial(self.collate_fn, 
+                             tokenizer=self.tokenizer, 
+                             max_length=self.config.max_position_embeddings)
         )

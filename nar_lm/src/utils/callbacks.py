@@ -23,24 +23,46 @@ class LatentVisualizationCallback(pl.Callback):
             val_dataloader = trainer.datamodule.val_dataloader()
             batch = next(iter(val_dataloader))
             
+            # Debug print to help troubleshoot
+            print(f"[DEBUG] LatentVisualizationCallback: batch keys: {batch.keys()}")
+            
             # Move to the same device as the model
             input_ids = batch['input_ids'].to(pl_module.device)
+            attention_mask = batch.get('attention_mask')
+            if attention_mask is not None:
+                attention_mask = attention_mask.to(pl_module.device)
             
-            # Forward pass to get latent representations
+            print(f"[DEBUG] LatentVisualizationCallback: input_ids shape: {input_ids.shape}")
+            
+            # Forward pass to get latent representations with error handling
             with torch.no_grad():
-                encoder_output = pl_module.encoder(input_ids)
+                encoder_output = pl_module.encoder(input_ids, attention_mask)
+                print(f"[DEBUG] LatentVisualizationCallback: encoder_output shape: {encoder_output.shape}")
                 _, latent = pl_module.latent_mapper(encoder_output)
+                print(f"[DEBUG] LatentVisualizationCallback: latent shape: {latent.shape}")
+            
+            # Take a subset and ensure we have enough data
+            max_samples = min(self.num_samples, latent.size(0))
+            if max_samples == 0:
+                print("[WARNING] LatentVisualizationCallback: No samples available for visualization")
+                return
+                
+            latent_subset = latent[:max_samples].cpu().numpy()
+            print(f"[DEBUG] LatentVisualizationCallback: latent_subset shape: {latent_subset.shape}")
             
             # Visualize latent space (first 2 dimensions)
             fig, ax = plt.subplots(figsize=(10, 8))
             
-            # Take a subset of samples for visualization
-            latent_subset = latent[:self.num_samples].cpu().numpy()
-            
-            # PCA-like 2D visualization
+            # Use a more robust approach for visualization
             for i, sample_latent in enumerate(latent_subset):
-                # Average across sequence length
+                # Average across sequence length (handling variable lengths)
                 avg_latent = np.mean(sample_latent, axis=0)
+                
+                # Ensure we have at least 2 dimensions
+                if len(avg_latent) < 2:
+                    print(f"[WARNING] Latent dimension too small: {len(avg_latent)}")
+                    continue
+                    
                 # Take first 2 dimensions
                 ax.scatter(avg_latent[0], avg_latent[1], label=f"Sample {i+1}")
             
@@ -66,6 +88,8 @@ class LatentVisualizationCallback(pl.Callback):
             )
         except Exception as e:
             print(f"Warning: Latent visualization failed with error: {e}")
+            import traceback
+            traceback.print_exc()  # Print full stack trace for better debugging
 
 
 class AttentionVisualizationCallback(pl.Callback):
@@ -77,30 +101,34 @@ class AttentionVisualizationCallback(pl.Callback):
     
     def on_validation_epoch_end(self, trainer, pl_module):
         try:
+            # Instead of trying to extract real attention weights (which requires model modification),
+            # create a placeholder visualization that explains the situation
+            fig, ax = plt.subplots(figsize=(10, 8))
+            
+            # Get a sample sentence for visualization
             device = pl_module.device
             tokenizer = pl_module.tokenizer
-            
-            # Process the first prompt
             prompt = self.prompts[0]
             
             # Tokenize
             tokens = tokenizer.tokenize(prompt)
             input_ids = tokenizer(prompt, return_tensors="pt").input_ids.to(device)
+            seq_len = input_ids.size(1)
             
-            # Extract attention weights (we need to modify the model to save attention weights)
-            # This is a placeholder for the actual implementation
-            attention_weights = torch.rand(
-                (1, pl_module.config.encoder_layers, pl_module.config.num_attention_heads, 
-                 input_ids.size(1), input_ids.size(1))
-            )
+            # Create a pattern that resembles attention but is just for visualization
+            # This creates a pattern where tokens attend more to nearby tokens
+            # (Just a placeholder until real attention weights can be extracted)
+            att_map = np.zeros((seq_len, seq_len))
+            for i in range(seq_len):
+                for j in range(seq_len):
+                    # Distance-based pattern (closer tokens attend more to each other)
+                    att_map[i, j] = 1.0 / (1.0 + abs(i-j))
+                    
+            # Normalize rows
+            for i in range(seq_len):
+                att_map[i] = att_map[i] / att_map[i].sum()
             
-            # Create and log attention heatmap
-            layer_idx = 0  # Visualize first layer
-            head_idx = 0   # Visualize first attention head
-            
-            att_map = attention_weights[0, layer_idx, head_idx].cpu().numpy()
-            
-            fig, ax = plt.subplots(figsize=(10, 8))
+            # Create heatmap visualization
             im = ax.imshow(att_map, cmap='viridis')
             fig.colorbar(im, ax=ax)
             
@@ -110,7 +138,7 @@ class AttentionVisualizationCallback(pl.Callback):
             ax.set_xticklabels(tokens, rotation=90)
             ax.set_yticklabels(tokens)
             
-            ax.set_title(f"Attention Pattern (Layer {layer_idx+1}, Head {head_idx+1})")
+            ax.set_title("Simulated Attention Pattern\n(Note: Uses distance-based pattern, not actual model attention)")
             
             # Convert to image and log
             buf = io.BytesIO()
@@ -122,11 +150,20 @@ class AttentionVisualizationCallback(pl.Callback):
             
             trainer.logger.experiment.add_image(
                 "attention_map", 
-                image.transpose(2, 0, 1),  # Convert to channel-first format
+                image.transpose(2, 0, 1),
+                global_step=trainer.global_step
+            )
+            
+            # Also log a text note explaining the situation
+            trainer.logger.experiment.add_text(
+                "attention_map_note",
+                "Note: To visualize actual attention weights, the model needs to be modified to expose them during the forward pass.",
                 global_step=trainer.global_step
             )
         except Exception as e:
             print(f"Warning: Attention visualization failed with error: {e}")
+            import traceback
+            traceback.print_exc()
 
 
 class GenerationProgressCallback(pl.Callback):

@@ -3,6 +3,15 @@ import torch
 
 class SimpleTextDataset(Dataset):
     def __init__(self, texts, tokenizer, max_length=None):
+        """
+        Improved dataset that stores raw texts instead of tokenized data
+        
+        Args:
+            texts: List of text strings
+            tokenizer: Tokenizer instance (used for debugging/statistics only)
+            max_length: Maximum sequence length (optional)
+        """
+        self.texts = texts
         self.tokenizer = tokenizer
         self.max_length = max_length
         
@@ -15,33 +24,33 @@ class SimpleTextDataset(Dataset):
             self.tokenizer.pad_token = self.tokenizer.eos_token
             print(f"[DEBUG] SimpleTextDataset: Set pad_token to eos_token={self.tokenizer.pad_token}")
         
-        # Tokenize all texts with dynamic padding
-        self.encodings = tokenizer(
-            texts, 
+        # Only tokenize a small sample to get length statistics (not for actual use)
+        # Use a subset to avoid slow initialization with large datasets
+        sample_size = min(100, len(texts))
+        sample_texts = texts[:sample_size]
+        
+        # Get sample length statistics without storing the encodings
+        sample_encodings = tokenizer(
+            sample_texts,
             truncation=True if max_length else False,
-            padding='longest',  # Use dynamic padding instead of fixed max_length
-            max_length=max_length if max_length else None, 
-            return_tensors='pt'
+            padding=False,  # No padding at this stage
+            max_length=max_length if max_length else None,
+            return_tensors=None,  # Return python lists
+            return_length=True    # Return sequence lengths
         )
         
-        # Store original sequence lengths for potential use in model
-        self.seq_lengths = self.encodings['attention_mask'].sum(dim=1)
+        seq_lengths = sample_encodings['length']
         
         # Debug sequence lengths
-        print(f"[DEBUG] SimpleTextDataset: encoded {len(texts)} texts")
-        print(f"[DEBUG] SimpleTextDataset: sequence lengths - min={self.seq_lengths.min().item()}, max={self.seq_lengths.max().item()}, mean={self.seq_lengths.float().mean().item():.2f}")
-        print(f"[DEBUG] SimpleTextDataset: sequence length dtype={self.seq_lengths.dtype}")
+        print(f"[DEBUG] SimpleTextDataset: stored {len(texts)} raw texts")
+        if len(seq_lengths) > 0:
+            print(f"[DEBUG] SimpleTextDataset: sequence lengths (sample) - min={min(seq_lengths)}, max={max(seq_lengths)}, mean={sum(seq_lengths)/len(seq_lengths):.2f}")
         
     def __len__(self):
-        return len(self.encodings['input_ids'])
+        return len(self.texts)
     
     def __getitem__(self, idx):
-        # Ensure seq_length is type long (int64) to prevent dtype mismatches
-        seq_length = self.seq_lengths[idx].long()
-        
+        # Simply return the raw text - tokenization happens in collate_fn
         return {
-            'input_ids': self.encodings['input_ids'][idx],
-            'attention_mask': self.encodings['attention_mask'][idx],
-            'labels': self.encodings['input_ids'][idx].clone(),
-            'seq_length': seq_length  # Explicitly convert to long type
+            'text': self.texts[idx]
         }

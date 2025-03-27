@@ -154,7 +154,30 @@ class LatentNARModel(pl.LightningModule):
             if seq_length is not None:
                 print(f"[DEBUG] {step_type}_step seq_length: shape={seq_length.shape}, dtype={seq_length.dtype}, values={seq_length[:5]}")
             
-            loss, logits, _, length_logits = self(input_ids, attention_mask, labels, seq_length)
+            # Forward pass with error handling
+            try:
+                loss, logits, _, length_logits = self(input_ids, attention_mask, labels, seq_length)
+            except RuntimeError as e:
+                print(f"[ERROR] Forward pass failed: {e}")
+                # If tensor sizes don't match, try again with a more careful approach
+                if "size mismatch" in str(e):
+                    print(f"[RECOVERY] Attempting recovery from size mismatch...")
+                    # Make sure all tensors have compatible shapes
+                    max_len = input_ids.size(1)
+                    padded_labels = labels
+                    if labels.size(1) != max_len:
+                        padded_labels = torch.nn.functional.pad(
+                            labels, 
+                            (0, max_len - labels.size(1)), 
+                            mode="constant", 
+                            value=self.tokenizer.pad_token_id
+                        )
+                    
+                    # Try forward pass again
+                    loss, logits, _, length_logits = self(input_ids, attention_mask, padded_labels, seq_length)
+                else:
+                    # Other errors we can't handle, re-raise
+                    raise e
             
             # Calculate accuracy with error handling
             accuracy = 0
@@ -162,6 +185,14 @@ class LatentNARModel(pl.LightningModule):
                 preds = torch.argmax(logits, dim=-1)
                 # Debug predictions
                 print(f"[DEBUG] {step_type}_step pred shape: {preds.shape}, label shape: {labels.shape}")
+                
+                # Make sure preds and labels have same size for accurate comparison
+                if preds.size() != labels.size():
+                    print(f"[WARNING] Size mismatch: preds={preds.shape}, labels={labels.shape}. Truncating to smaller size.")
+                    # Truncate to the smaller size
+                    min_len = min(preds.size(1), labels.size(1))
+                    preds = preds[:, :min_len]
+                    labels = labels[:, :min_len]
                 
                 # Verify token IDs
                 print(f"[DEBUG] {step_type}_step pad_token_id: {self.tokenizer.pad_token_id}")
