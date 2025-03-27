@@ -201,7 +201,8 @@ class GenerationProgressCallback(pl.Callback):
             max_length = min(max_length, pl_module.config.max_position_embeddings)
             
             # Initial prediction
-            logits, _ = pl_module.decoder(latent_output)
+            # Fix this line - decoder returns 3 values, not 2
+            logits, _, _ = pl_module.decoder(latent_output)
             preds = torch.argmax(logits, dim=-1)
             
             # Create length mask
@@ -217,7 +218,8 @@ class GenerationProgressCallback(pl.Callback):
                 latent_output, _ = pl_module.latent_mapper(encoder_output)
                 
                 # Get new predictions
-                logits, _ = pl_module.decoder(latent_output, encoder_output)
+                # Fix this line - decoder returns 3 values, not 2
+                logits, _, _ = pl_module.decoder(latent_output, encoder_output)
                 new_preds = torch.argmax(logits, dim=-1)
                 
                 # Update high-confidence predictions with length masking
