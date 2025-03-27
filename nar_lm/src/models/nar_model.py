@@ -26,21 +26,25 @@ class EnhancedNARModel(pl.LightningModule):
         self.save_hyperparameters(config)
         self.config = config
         
+        # Initialize tokenizer first to get accurate vocab size
+        logger.info(f"Loading tokenizer: {config.tokenizer_name}")
+        self.tokenizer = AutoTokenizer.from_pretrained(config.tokenizer_name)
+        
+        # Update vocab_size to match tokenizer's vocabulary
+        self.config.vocab_size = len(self.tokenizer.vocab)
+        logger.info(f"Updated vocab_size to {self.config.vocab_size} to match tokenizer")
+
         # Initialize components
         logger.info(f"Initializing enhanced model with hidden_size={config.hidden_size}, latent_size={config.latent_size}")
         self.encoder = Encoder(config)
         self.latent_mapper = LatentMapper(config)
         self.decoder = Decoder(config)  # Use the ImprovedDecoder
         
-        # Initialize tokenizer
-        logger.info(f"Loading tokenizer: {config.tokenizer_name}")
-        self.tokenizer = AutoTokenizer.from_pretrained(config.tokenizer_name)
-        
         # Sample prompts for generation logging
         self.sample_prompts = [
-            "This is a test",
-            "The model can",
-            "Non-autoregressive generation is"
+            "I'm not sure if this is a compliment",
+            "but I find listening to your videos whilst I'm falling asleep extremely soothing",
+            "I have very severe anxiety disorder and this helps me a lot, Thanks for  your content"
         ]
         
         # Loss function for length prediction
@@ -56,6 +60,7 @@ class EnhancedNARModel(pl.LightningModule):
             self.base_confidence_threshold + 0.05  # Step 4+: Higher threshold for later steps
         ]
     
+    # In the forward method, add validation for target indices
     def forward(self, input_ids, attention_mask=None, target_ids=None, target_seq_length=None):
         # Encode input
         encoder_output = self.encoder(input_ids, attention_mask)
@@ -69,6 +74,13 @@ class EnhancedNARModel(pl.LightningModule):
         return_loss = None
         
         if target_ids is not None:
+            # Log statistics about target IDs to debug issues
+            with torch.no_grad():
+                max_id = target_ids.max().item()
+                min_id = target_ids.min().item()
+                if max_id >= self.config.vocab_size:
+                    logger.warning(f"Found target ID {max_id} >= vocab_size {self.config.vocab_size}, clipping will occur")
+            
             # Calculate token prediction loss
             loss_fct = nn.CrossEntropyLoss(ignore_index=self.tokenizer.pad_token_id)
             loss = loss_fct(logits.view(-1, self.config.vocab_size), target_ids.view(-1))
@@ -76,7 +88,21 @@ class EnhancedNARModel(pl.LightningModule):
             
             # Calculate length prediction loss if target_seq_length is provided
             if target_seq_length is not None and length_logits is not None:
-                length_loss = self.length_loss_fct(length_logits, target_seq_length)
+                # Ensure target sequence lengths are within valid range
+                max_pred_length = length_logits.size(-1)
+                # Add logging to debug length prediction issues
+                with torch.no_grad():
+                    max_length = target_seq_length.max().item()
+                    min_length = target_seq_length.min().item()
+                    if max_length >= max_pred_length:
+                        logger.warning(f"Found target length {max_length} >= max_pred_length {max_pred_length}, clipping will occur")
+                
+                # Clip target sequence lengths to valid range
+                target_seq_length_clipped = torch.clamp(target_seq_length, 0, max_pred_length - 1)
+                
+                # Use clipped values for loss calculation
+                length_loss = self.length_loss_fct(length_logits, target_seq_length_clipped)
+                
                 # Combine losses with a weight factor
                 return_loss = loss + 0.2 * length_loss
         

@@ -11,7 +11,7 @@ encoder_layers: 6  # Increased from 4
 decoder_layers: 6  # Increased from 4
 num_attention_heads: 8  # Increased from 6
 intermediate_size: 2048  # Increased from 1536
-max_position_embeddings: 256
+max_position_embeddings: 384
 latent_size: 256   # Increased from 192
 
 # Regularization
