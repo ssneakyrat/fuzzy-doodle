@@ -7,7 +7,7 @@ dataset_config: "wikitext-103-v1"          # Dataset configuration name
 num_train_samples: 10000                  # Number of samples to use from dataset
 num_val_samples: 1000                     # Number of validation samples
 num_test_samples: 1000                    # Number of test samples
-max_char_length: 1000                     # Maximum character length for each text sample
+max_char_length: 768                     # Maximum character length for each text sample
 val_split: 0.1                            # Only used if no validation set is available
 
 # Legacy options (kept for backward compatibility)
@@ -16,18 +16,18 @@ val_file: null                            # Set to path for custom validation fi
 test_file: null                           # Set to path for custom test file
 
 # Training parameters
-batch_size: 16
+batch_size: 8
 learning_rate: 5e-5
 weight_decay: 0.01
 max_epochs: 1 #15                            # Increased from 10
-steps_per_epoch: 625                      # num_train_samples / batch_size
+steps_per_epoch: 1250                      # num_train_samples / batch_size
 use_lr_scheduler: true
-gradient_clip_val: 1.0
+gradient_clip_val: 0.5                    #reduced from 1
 
 # Hardware/Performance
 num_workers: 4
 precision: "16-mixed"                     # Use mixed precision
-accumulate_grad_batches: 1
+accumulate_grad_batches: 2                # increase from 1
 
 # Logging
 log_every_n_steps: 50

@@ -14,7 +14,7 @@ num_test_samples: 100
 batch_size: 16
 learning_rate: 5e-5
 weight_decay: 0.01
-max_epochs: 10
+max_epochs: 1 #10
 steps_per_epoch: 63  # num_train_samples / batch_size (approx)
 use_lr_scheduler: true
 gradient_clip_val: 1.0

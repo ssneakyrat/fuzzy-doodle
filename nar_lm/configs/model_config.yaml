@@ -11,7 +11,7 @@ encoder_layers: 4
 decoder_layers: 4
 num_attention_heads: 6
 intermediate_size: 1536
-max_position_embeddings: 128
+max_position_embeddings: 256
 latent_size: 192
 
 # Regularization
@@ -20,3 +20,5 @@ dropout_rate: 0.1
 # Generation parameters
 num_refinement_steps: 3
 confidence_threshold: 0.9
+
+use_gradient_checkpoint: true
