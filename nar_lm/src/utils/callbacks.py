@@ -23,6 +23,7 @@ class LatentVisualizationCallback(pl.Callback):
     
     def on_validation_epoch_end(self, trainer, pl_module):
         try:
+            '''
             # Get a batch of validation data
             val_dataloader = trainer.datamodule.val_dataloader()
             batch = next(iter(val_dataloader))
@@ -89,6 +90,7 @@ class LatentVisualizationCallback(pl.Callback):
                 image.transpose(2, 0, 1),  # Convert to channel-first format
                 global_step=trainer.global_step
             )
+            '''
         except Exception as e:
             logger.error(f"Latent visualization failed: {e}", exc_info=True)
 
@@ -102,6 +104,7 @@ class AttentionVisualizationCallback(pl.Callback):
     
     def on_validation_epoch_end(self, trainer, pl_module):
         try:
+            '''
             # Instead of trying to extract real attention weights (which requires model modification),
             # create a placeholder visualization that explains the situation
             fig, ax = plt.subplots(figsize=(10, 8))
@@ -160,7 +163,8 @@ class AttentionVisualizationCallback(pl.Callback):
                 "attention_map_note",
                 "Note: To visualize actual attention weights, the model needs to be modified to expose them during the forward pass.",
                 global_step=trainer.global_step
-            )
+            )'
+            '''
         except Exception as e:
             logger.error(f"Attention visualization failed: {e}", exc_info=True)
 
