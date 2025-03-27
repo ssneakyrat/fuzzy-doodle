@@ -150,13 +150,21 @@ class GenerationProgressCallback(pl.Callback):
             # Tokenize
             input_ids = tokenizer(prompt, return_tensors="pt").input_ids.to(device)
             
-            # Generate with intermediate outputs
+            # Generate with intermediate outputs - matching the model's generate method
             encoder_output = pl_module.encoder(input_ids)
-            latent_output, _ = pl_module.latent_mapper(encoder_output)
+            latent_output, latent = pl_module.latent_mapper(encoder_output)
+            
+            # Predict sequence length
+            pred_lengths = pl_module._predict_length(None, latent)
+            max_length = int(torch.max(pred_lengths).item() * 1.2)
+            max_length = min(max_length, pl_module.config.max_position_embeddings)
             
             # Initial prediction
-            logits = pl_module.decoder(latent_output)
+            logits, _ = pl_module.decoder(latent_output)
             preds = torch.argmax(logits, dim=-1)
+            
+            # Create length mask
+            length_mask = torch.arange(preds.size(1), device=device).unsqueeze(0) < pred_lengths.unsqueeze(1)
             
             # Save all intermediate outputs
             all_outputs = [tokenizer.decode(preds[0], skip_special_tokens=True)]
@@ -168,20 +176,25 @@ class GenerationProgressCallback(pl.Callback):
                 latent_output, _ = pl_module.latent_mapper(encoder_output)
                 
                 # Get new predictions
-                logits = pl_module.decoder(latent_output, encoder_output)
+                logits, _ = pl_module.decoder(latent_output, encoder_output)
                 new_preds = torch.argmax(logits, dim=-1)
                 
-                # Update high-confidence predictions
+                # Update high-confidence predictions with length masking
                 probs = torch.nn.functional.softmax(logits, dim=-1)
                 confidence = torch.max(probs, dim=-1)[0]
-                mask = confidence > pl_module.config.confidence_threshold
-                preds = torch.where(mask, new_preds, preds)
+                update_mask = (confidence > pl_module.config.confidence_threshold) & length_mask
+                preds = torch.where(update_mask, new_preds, preds)
+                
+                # Apply length mask to ensure tokens beyond predicted length are pad tokens
+                preds = torch.where(length_mask, preds, 
+                                    torch.tensor(tokenizer.pad_token_id, device=device))
                 
                 # Save the current output
                 all_outputs.append(tokenizer.decode(preds[0], skip_special_tokens=True))
             
             # Log to TensorBoard
             log_text = f"Prompt: {prompt}\n\n"
+            log_text += f"Predicted length: {pred_lengths[0].item()}\n\n"
             for i, output in enumerate(all_outputs):
                 log_text += f"Step {i}: {output}\n\n"
             
@@ -192,3 +205,6 @@ class GenerationProgressCallback(pl.Callback):
             )
         except Exception as e:
             print(f"Warning: Generation progress visualization failed with error: {e}")
+            # Print more detailed error information
+            import traceback
+            traceback.print_exc()
