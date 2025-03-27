@@ -33,9 +33,20 @@ def merge_configs_dict(model_config, train_config):
 
 def main(args):
     """Main inference function"""
-    # Set up logger
-    log_level = logging.DEBUG if args.verbose else logging.INFO
-    logger = setup_logger('nar_inference', log_file=args.log_file, level=log_level)
+    # Set up logger with improved logging control
+    if args.info:
+        log_level = logging.DEBUG if args.verbose else logging.INFO
+        disable_info = False
+    else:
+        log_level = logging.DEBUG if args.verbose else logging.WARNING
+        disable_info = not args.verbose  # Only show INFO if verbose and info flags are set
+    
+    logger = setup_logger('nar_inference', log_file=args.log_file, level=log_level, disable_info=disable_info)
+    
+    if args.verbose:
+        logger.debug("Debug logging is enabled")
+    if args.info:
+        logger.info("Info logging is enabled")
     
     # Load configurations
     model_config = load_config(args.model_config)
@@ -168,6 +179,11 @@ if __name__ == "__main__":
         "--verbose",
         action="store_true",
         help="Enable verbose (debug) logging"
+    )
+    parser.add_argument(
+        "--info",
+        action="store_true",
+        help="Enable INFO logs (disabled by default)"
     )
     args = parser.parse_args()
     

@@ -40,10 +40,22 @@ def merge_configs_dict(model_config, train_config):
     return DotDict(config)
 
 def main(args):
-    # Set up logger
-    log_level = logging.DEBUG if args.verbose else logging.INFO
-    logger_obj = setup_logger('nar_lm', log_file=os.path.join(args.output_dir, 'training.log'), level=log_level)
+    # Set up logger with improved logging control
+    if args.info:
+        log_level = logging.DEBUG if args.verbose else logging.INFO
+        disable_info = False
+    else:
+        log_level = logging.DEBUG if args.verbose else logging.WARNING
+        disable_info = not args.verbose  # Only show INFO if verbose and info flags are set
+    
+    logger_obj = setup_logger('nar_lm', log_file=os.path.join(args.output_dir, 'training.log'), 
+                             level=log_level, disable_info=disable_info)
 
+    if args.verbose:
+        logger_obj.debug("Debug logging is enabled")
+    if args.info:
+        logger_obj.info("Info logging is enabled")
+    
     # Set to medium precision
     torch.set_float32_matmul_precision('medium')
 
@@ -163,6 +175,11 @@ if __name__ == "__main__":
         "--verbose",
         action="store_true",
         help="Enable verbose (debug) logging"
+    )
+    parser.add_argument(
+        "--info",
+        action="store_true",
+        help="Enable INFO logs (disabled by default)"
     )
     args = parser.parse_args()
     
